@@ -1,0 +1,12 @@
+[
+  {"role": "user", "time": "2026-03-02T09:00:00Z", "content": "Halo, saya Andi. Saya baru mulai kerja sebagai backend engineer di Tokoku, kantornya di Jakarta Selatan."},
+  {"role": "assistant", "time": "2026-03-02T09:00:10Z", "content": "Selamat bergabung di Tokoku, Andi! Ada yang bisa saya bantu di minggu pertama?"},
+  {"role": "user", "time": "2026-03-02T09:01:00Z", "content": "Stack kami Go dan PostgreSQL. Saya alergi kacang, jadi tolong ingat kalau nanti saya minta rekomendasi makan siang."},
+  {"role": "assistant", "time": "2026-03-02T09:01:15Z", "content": "Siap, saya catat: tidak ada kacang. Untuk makan siang dekat Jakarta Selatan, saya sarankan Soto Betawi Haji Husein."},
+  {"role": "user", "time": "2026-03-20T14:00:00Z", "content": "Adik saya Sinta minggu depan wisuda dari ITB, tanggal 28 Maret. Saya mau kasih hadiah laptop, budget sekitar 12 juta."},
+  {"role": "assistant", "time": "2026-03-20T14:00:20Z", "content": "Selamat untuk Sinta! Dengan budget 12 juta, saya rekomendasikan ThinkPad E14 Gen 6 karena keyboardnya bagus dan awet."},
+  {"role": "user", "time": "2026-05-11T10:00:00Z", "content": "Update: saya sudah pindah ke Bandung sejak awal Mei dan sekarang kerja remote penuh. Masih di Tokoku."},
+  {"role": "assistant", "time": "2026-05-11T10:00:12Z", "content": "Wah, selamat menempati rumah baru di Bandung! Kerja remote dari sana pasti lebih sejuk."},
+  {"role": "user", "time": "2026-06-15T08:30:00Z", "content": "Tim kami memutuskan migrasi dari PostgreSQL ke CockroachDB kuartal depan. Saya yang ditunjuk memimpin migrasinya."},
+  {"role": "assistant", "time": "2026-06-15T08:30:15Z", "content": "Tanggung jawab besar! Mulailah dengan audit fitur PostgreSQL yang tidak didukung CockroachDB, misalnya trigger tertentu."}
+]
