@@ -1,0 +1,47 @@
+name: Release
+
+# Push a tag like v0.1.0 to publish a version. Go modules are published by
+# the tag itself; this workflow tests it, attaches CLI binaries to a GitHub
+# release, and asks the Go module proxy to index the version.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go vet ./...
+      - run: go test ./...
+
+      - name: Build binaries
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os=${target%/*}; arch=${target#*/}
+            ext=""; [ "$os" = windows ] && ext=".exe"
+            GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w" \
+              -o "dist/openpersona-${GITHUB_REF_NAME}-${os}-${arch}${ext}" ./cmd/openpersona
+          done
+          (cd dist && sha256sum * > checksums.txt)
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+
+      # Not fatal: the proxy also picks the version up on the first `go get`.
+      - name: Ask the Go proxy to index this version
+        continue-on-error: true
+        run: curl -fsS "https://proxy.golang.org/go.vicoworks.com/openpersona/@v/${GITHUB_REF_NAME}.info"

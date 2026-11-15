@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openpersona/openpersona/llm"
+	"go.vicoworks.com/openpersona/llm"
 )
 
 type fakeLLM func(req llm.Request) string
@@ -26,7 +26,11 @@ Expenses above Rp 5,000,000 need CFO approval before payment.
 Reconcile bank accounts, post accruals, then lock the period by working day 5.
 `
 
-func trainFake(t *testing.T) string {
+func trainFake(t *testing.T) string { return trainFakeWith(t, Trainer{}, Spec{}) }
+
+// trainFakeWith trains the test policy with a fake LLM. Fields left zero in
+// tr and spec get the test defaults.
+func trainFakeWith(t *testing.T, tr Trainer, spec Spec) string {
 	t.Helper()
 	model := fakeLLM(func(req llm.Request) string {
 		system, user := req.Messages[0].Content, req.Messages[1].Content
@@ -42,10 +46,11 @@ func trainFake(t *testing.T) string {
 		return `{"units":[]}`
 	})
 	out := filepath.Join(t.TempDir(), "fina.persona")
-	tr := Trainer{LLM: model, ChunkTokens: 40}
-	report, err := tr.Train(context.Background(),
-		Spec{Name: "Fina", Role: "Finance controller", Boundaries: []string{"Never approve payments yourself."}},
-		[]Source{{Name: "policy", Text: policy}}, out)
+	tr.LLM, tr.ChunkTokens = model, 40
+	if spec.Name == "" {
+		spec.Name, spec.Role, spec.Boundaries = "Fina", "Finance controller", []string{"Never approve payments yourself."}
+	}
+	report, err := tr.Train(context.Background(), spec, []Source{{Name: "policy", Text: policy}}, out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,5 +127,73 @@ func TestChatUsesPersonaPromptAndFollowUps(t *testing.T) {
 	}
 	if !strings.HasSuffix(system, "</memory>") {
 		t.Error("extra context not appended")
+	}
+}
+
+// Two places with an "Opening hours" unit each: the reduce step must keep
+// both instead of merging them by title.
+func TestSameTitleDifferentKnowledgeKeepsBoth(t *testing.T) {
+	model := fakeLLM(func(req llm.Request) string {
+		system, user := req.Messages[0].Content, req.Messages[1].Content
+		switch {
+		case strings.HasPrefix(system, "You are writing the core identity"):
+			return `{"identity":"You are Kora.","principles":[],"style":""}`
+		case strings.Contains(user, "Senso-ji"):
+			return `{"units":[{"kind":"reference","title":"Opening hours","body":"Senso-ji main hall opens 06:00 to 17:00, free entry.","tags":["Asakusa"]}]}`
+		case strings.Contains(user, "Kinkaku-ji"):
+			return `{"units":[{"kind":"reference","title":"Opening hours","body":"Kinkaku-ji opens 09:00 to 17:00, entry 500 yen.","tags":["Kyoto"]},
+			                  {"kind":"reference","title":"Opening hours","body":"Kinkaku-ji is open 09:00-17:00 daily; entry costs 500 yen.","tags":["Kyoto"]}]}`
+		}
+		return `{"units":[]}`
+	})
+	src := "# Tokyo\n\n## Asakusa\n\nSenso-ji main hall opens 06:00 to 17:00.\n\n# Kyoto\n\n## Kinkaku-ji\n\nKinkaku-ji opens 09:00 to 17:00, entry 500 yen.\n"
+	out := filepath.Join(t.TempDir(), "kora.persona")
+	spec := Spec{Name: "Kora", Role: "Travel planner", Retrieve: &RetrieveDefaults{Units: 1, Sources: -1}}
+	report, err := (&Trainer{LLM: model, ChunkTokens: 20}).Train(context.Background(), spec, []Source{{Name: "guide", Text: src}}, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Senso-ji and Kinkaku-ji kept apart; the two Kinkaku-ji paraphrases merged.
+	if report.Units != 2 {
+		t.Fatalf("want 2 units, got %+v", report)
+	}
+	p, err := Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	units, _ := p.Units(context.Background())
+	titles := ""
+	for _, u := range units {
+		titles += u.Title + "|"
+	}
+	if !strings.Contains(titles, "Opening hours (Kyoto > Kinkaku-ji)") && !strings.Contains(titles, "Opening hours (Kinkaku-ji)") {
+		t.Errorf("titles: %s", titles)
+	}
+
+	// The spec's retrieval budget applies when the caller sets none.
+	k, err := p.Retrieve(context.Background(), "opening hours", RetrieveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(k.Units) != 1 || len(k.Sources) != 0 {
+		t.Errorf("spec budget ignored: %d units, %d sources", len(k.Units), len(k.Sources))
+	}
+	if k, _ = p.Retrieve(context.Background(), "opening hours", RetrieveOptions{Units: 2}); len(k.Units) != 2 {
+		t.Errorf("caller budget ignored: %d units", len(k.Units))
+	}
+}
+
+func TestFacets(t *testing.T) {
+	q := "Saya punya budget Rp 20.000.000 dan tinggal di Jakarta. Rapat di Kariya, Aichi tanggal 12 Maret jam 14:00! Setelah itu wisata tiga hari di Kyoto?"
+	got := facets(q)
+	if len(got) != 3 || !strings.Contains(got[0], "20.000.000") || !strings.HasPrefix(got[2], "Setelah itu") {
+		t.Fatalf("facets: %q", got)
+	}
+	if f := facets("Who approves a 7 million rupiah expense?"); f != nil {
+		t.Errorf("single question split into %q", f)
+	}
+	if f := facets("Hi. Thanks."); f != nil {
+		t.Errorf("short sentences kept: %q", f)
 	}
 }

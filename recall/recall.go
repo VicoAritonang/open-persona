@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/openpersona/openpersona/graph"
-	"github.com/openpersona/openpersona/internal/textutil"
-	"github.com/openpersona/openpersona/llm"
+	"go.vicoworks.com/openpersona/graph"
+	"go.vicoworks.com/openpersona/internal/textutil"
+	"go.vicoworks.com/openpersona/llm"
 )
 
 // Channel is one way of finding candidates. Add your own to customize
@@ -21,6 +21,9 @@ type Channel struct {
 	Name   string
 	Weight float64 // contribution to the fused score (default 1)
 	Run    func(ctx context.Context) ([]graph.Hit, error)
+	// Optional channels are skipped when they fail instead of failing the
+	// search. Use it for channels that depend on a network call.
+	Optional bool
 }
 
 // Item is a fused result.
@@ -53,6 +56,9 @@ func Fuse(ctx context.Context, channels []Channel) ([]Item, error) {
 	var order []int64
 	for i, hits := range results {
 		if errs[i] != nil {
+			if channels[i].Optional {
+				continue
+			}
 			return nil, fmt.Errorf("recall: channel %s: %w", channels[i].Name, errs[i])
 		}
 		w := channels[i].Weight
@@ -85,15 +91,70 @@ func Text(s *graph.Store, scope string, kinds []graph.Kind, query string, opt gr
 	}
 }
 
-// Vector returns a channel that ranks nodes by embedding similarity.
-func Vector(s *graph.Store, emb llm.Embedder, scope string, kinds []graph.Kind, query string, opt graph.SearchOptions) func(context.Context) ([]graph.Hit, error) {
-	return func(ctx context.Context) ([]graph.Hit, error) {
+// QueryVector embeds a query once, however many channels ask for it.
+type QueryVector struct {
+	once sync.Once
+	vec  []float32
+	err  error
+}
+
+func (q *QueryVector) get(ctx context.Context, emb llm.Embedder, query string) ([]float32, error) {
+	q.once.Do(func() {
 		vecs, err := emb.Embed(ctx, []string{query})
+		if err == nil && len(vecs) != 1 {
+			err = fmt.Errorf("embedder returned %d vectors for 1 text", len(vecs))
+		}
+		if err != nil {
+			q.err = err
+			return
+		}
+		q.vec = vecs[0]
+	})
+	return q.vec, q.err
+}
+
+// Vector returns a channel that ranks nodes by embedding similarity. Pass
+// the same qv to several Vector channels of one search to share the query
+// embedding; nil embeds separately.
+func Vector(s *graph.Store, emb llm.Embedder, qv *QueryVector, scope string, kinds []graph.Kind, query string, opt graph.SearchOptions) func(context.Context) ([]graph.Hit, error) {
+	if qv == nil {
+		qv = &QueryVector{}
+	}
+	return func(ctx context.Context) ([]graph.Hit, error) {
+		vec, err := qv.get(ctx, emb, query)
 		if err != nil {
 			return nil, err
 		}
-		return s.SearchVector(ctx, scope, kinds, vecs[0], opt)
+		return s.SearchVector(ctx, scope, kinds, vec, opt)
 	}
+}
+
+// EmbedNodes embeds nodes in batches and stores the vectors. text chooses
+// what represents each node.
+func EmbedNodes(ctx context.Context, s *graph.Store, emb llm.Embedder, nodes []*graph.Node, text func(*graph.Node) string) error {
+	const batch = 96
+	for start := 0; start < len(nodes); start += batch {
+		part := nodes[start:min(start+batch, len(nodes))]
+		texts := make([]string, len(part))
+		for i, n := range part {
+			texts[i] = text(n)
+		}
+		vecs, err := emb.Embed(ctx, texts)
+		if err != nil {
+			return fmt.Errorf("embed: %w", err)
+		}
+		if len(vecs) != len(part) {
+			return fmt.Errorf("embed: got %d vectors for %d texts", len(vecs), len(part))
+		}
+		byID := make(map[int64][]float32, len(part))
+		for i, v := range vecs {
+			byID[part[i].ID] = v
+		}
+		if err := s.PutVectors(ctx, byID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ViaEntities returns the graph channel: it finds the entities the query

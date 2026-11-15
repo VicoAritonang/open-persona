@@ -21,10 +21,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openpersona/openpersona/graph"
-	"github.com/openpersona/openpersona/internal/textutil"
-	"github.com/openpersona/openpersona/llm"
-	"github.com/openpersona/openpersona/recall"
+	"go.vicoworks.com/openpersona/graph"
+	"go.vicoworks.com/openpersona/internal/textutil"
+	"go.vicoworks.com/openpersona/llm"
+	"go.vicoworks.com/openpersona/recall"
 )
 
 // Message is one conversation turn to remember.
@@ -381,19 +381,7 @@ func (e *Engine) process(ctx context.Context, j job) error {
 	}
 
 	if e.cfg.Embedder != nil {
-		texts := make([]string, len(newNodes))
-		for i, n := range newNodes {
-			texts[i] = n.Body
-		}
-		vecs, err := e.cfg.Embedder.Embed(ctx, texts)
-		if err != nil {
-			return fmt.Errorf("embed: %w", err)
-		}
-		byID := make(map[int64][]float32, len(vecs))
-		for i, v := range vecs {
-			byID[newNodes[i].ID] = v
-		}
-		return store.PutVectors(ctx, byID)
+		return recall.EmbedNodes(ctx, store, e.cfg.Embedder, newNodes, func(n *graph.Node) string { return n.Body })
 	}
 	return nil
 }
@@ -505,9 +493,12 @@ func (e *Engine) Search(ctx context.Context, scope, query string, opt SearchOpti
 		{Name: "episodes", Weight: 1, Run: recall.Text(store, scope, epKinds, query, epOpt)},
 	}
 	if e.cfg.Embedder != nil {
+		// One query embedding serves both channels. They are optional: if the
+		// embedding API is down, search degrades to lexical + graph.
+		qv := &recall.QueryVector{}
 		channels = append(channels,
-			recall.Channel{Name: "facts-vector", Weight: 1, Run: recall.Vector(store, e.cfg.Embedder, scope, factKinds, query, factOpt)},
-			recall.Channel{Name: "episodes-vector", Weight: 1, Run: recall.Vector(store, e.cfg.Embedder, scope, epKinds, query, epOpt)},
+			recall.Channel{Name: "facts-vector", Weight: 1, Optional: true, Run: recall.Vector(store, e.cfg.Embedder, qv, scope, factKinds, query, factOpt)},
+			recall.Channel{Name: "episodes-vector", Weight: 1, Optional: true, Run: recall.Vector(store, e.cfg.Embedder, qv, scope, epKinds, query, epOpt)},
 		)
 	}
 	items, err := recall.Fuse(ctx, channels)

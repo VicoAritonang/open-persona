@@ -18,9 +18,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openpersona/openpersona/graph"
-	"github.com/openpersona/openpersona/internal/textutil"
-	"github.com/openpersona/openpersona/llm"
+	"go.vicoworks.com/openpersona/graph"
+	"go.vicoworks.com/openpersona/internal/textutil"
+	"go.vicoworks.com/openpersona/llm"
+	"go.vicoworks.com/openpersona/recall"
 )
 
 // Node kinds in a persona pack.
@@ -41,14 +42,34 @@ var UnitKinds = []graph.Kind{KindPrinciple, KindRule, KindProcedure, KindConcept
 // scope is the single namespace inside a pack.
 const scope = "persona"
 
-// Spec is the brief a persona is trained from.
+// Spec is the brief a persona is trained from. It is stored in the pack.
 type Spec struct {
+	// ID is the persona's stable identifier in a registry: lowercase
+	// letters, digits and hyphens (default: derived from Name).
+	ID string `json:"id,omitempty"`
+	// Version identifies this build of the persona, as semantic versioning
+	// ("1.2.0"; default "0.1.0"). A registry treats id@version as immutable,
+	// so retraining on changed material means a new version.
+	Version     string   `json:"version,omitempty"`
 	Name        string   `json:"name"`
 	Role        string   `json:"role"`                  // e.g. "Senior finance controller"
 	Description string   `json:"description,omitempty"` // whom it serves, what it is responsible for
+	Expertise   []string `json:"expertise,omitempty"`   // the areas it covers; questions outside them are out of scope
 	Tone        string   `json:"tone,omitempty"`        // e.g. "precise, calm, direct"
 	Language    string   `json:"language,omitempty"`    // answer language; empty = follow the user
 	Boundaries  []string `json:"boundaries,omitempty"`  // things it must never do
+	Author      string   `json:"author,omitempty"`      // who trained it (team, lab)
+	// Retrieve sets this persona's default retrieval budget. A broad
+	// persona (a travel planner whose one request touches visas, transport,
+	// food and events) needs more units per prompt than a narrow one.
+	// Optional; RetrieveOptions passed at runtime still win.
+	Retrieve *RetrieveDefaults `json:"retrieve,omitempty"`
+}
+
+// RetrieveDefaults is a pack's default retrieval budget.
+type RetrieveDefaults struct {
+	Units   int `json:"units,omitempty"`   // knowledge units per prompt (runtime default 8)
+	Sources int `json:"sources,omitempty"` // verbatim excerpts per prompt (runtime default 2; -1 for none)
 }
 
 // Source is one training document (markdown or plain text).
@@ -64,6 +85,17 @@ type Trainer struct {
 	Concurrency int
 	// ChunkTokens is the target chunk size of the source material (default 700).
 	ChunkTokens int
+	// Embedder adds vectors to the pack so retrieval can match by meaning,
+	// not only by words. Optional. EmbedModel names it ("provider:model")
+	// and is recorded in the pack: queries must be embedded by the same model.
+	Embedder   llm.Embedder
+	EmbedModel string
+	// TrainModel names the extraction model ("provider:model"). Optional;
+	// it is recorded in the pack for provenance.
+	TrainModel string
+	// Eval is a held-out question set scored against the pack before it is
+	// frozen; the result is stored in the pack. Optional.
+	Eval []EvalCase
 	// Logf receives progress messages. Optional.
 	Logf func(format string, args ...any)
 }
@@ -75,6 +107,7 @@ type Report struct {
 	Units    int            `json:"units"`
 	Entities int            `json:"entities"`
 	ByKind   map[string]int `json:"by_kind"`
+	Eval     *EvalSummary   `json:"eval,omitempty"`
 }
 
 type unit struct {
@@ -122,8 +155,8 @@ func (t *Trainer) Train(ctx context.Context, spec Spec, sources []Source, outPat
 	if t.LLM == nil {
 		return nil, errors.New("persona: Trainer.LLM is required")
 	}
-	if spec.Name == "" || spec.Role == "" {
-		return nil, errors.New("persona: spec needs name and role")
+	if err := spec.normalize(); err != nil {
+		return nil, err
 	}
 	logf := t.Logf
 	if logf == nil {
@@ -154,7 +187,7 @@ func (t *Trainer) Train(ctx context.Context, spec Spec, sources []Source, outPat
 	if len(chunks) == 0 {
 		return nil, errors.New("persona: no source text to train on")
 	}
-	logf("training %q: %d sources, %d chunks, %d workers", spec.Name, len(sources), len(chunks), workers)
+	logf("training %s@%s: %d sources, %d chunks, %d workers", spec.ID, spec.Version, len(sources), len(chunks), workers)
 
 	// 2. Map: one extraction call per chunk, in parallel.
 	brief := fmt.Sprintf("Persona: %s - %s. %s", spec.Name, spec.Role, spec.Description)
@@ -214,6 +247,13 @@ func (t *Trainer) Train(ctx context.Context, spec Spec, sources []Source, outPat
 			}
 			u.Kind = string(normalizeKind(u.Kind))
 			key := textutil.Normalize(u.Title)
+			if prev, ok := byKey[key]; ok && !sameKnowledge(prev.Body, u.Body) {
+				// Same title, different knowledge: "Opening hours" of two
+				// places, say. Keep both, each qualified by its section, so a
+				// broad corpus does not lose one to the other.
+				u.Title += " (" + sectionOf(chunks[ci].title) + ")"
+				key = textutil.Normalize(u.Title)
+			}
 			if prev, ok := byKey[key]; ok {
 				if len(u.Body) > len(prev.Body) {
 					prev.Body, prev.Kind = u.Body, u.Kind
@@ -279,11 +319,42 @@ func (t *Trainer) Train(ctx context.Context, spec Spec, sources []Source, outPat
 	specJSON, _ := json.Marshal(spec)
 	reportJSON, _ := json.Marshal(report)
 	err = errors.Join(
+		store.SetFileFormat(ctx, PackApplicationID, PackFormat),
 		store.Insert(ctx, nodes, edges),
 		store.SetMeta(ctx, "spec", string(specJSON)),
 		store.SetMeta(ctx, "report", string(reportJSON)),
 		store.SetMeta(ctx, "trained_at", time.Now().UTC().Format(time.RFC3339)),
+		store.SetMeta(ctx, "train_model", t.TrainModel),
 	)
+	if err == nil && t.Embedder != nil {
+		var embed []*graph.Node
+		for _, n := range nodes {
+			if n.Kind != graph.KindEntity && n.Kind != KindCore {
+				embed = append(embed, n)
+			}
+		}
+		logf("embedding %d nodes", len(embed))
+		err = errors.Join(
+			recall.EmbedNodes(ctx, store, t.Embedder, embed, embedText),
+			store.SetMeta(ctx, "embed_model", t.EmbedModel),
+		)
+	}
+	// Score the held-out questions on the finished graph, before freezing,
+	// so the result travels inside the pack.
+	if err == nil && len(t.Eval) > 0 {
+		p := &Persona{Spec: spec, Core: core, store: store}
+		if t.Embedder != nil {
+			p.Embedder, p.EmbedModel = t.Embedder, t.EmbedModel
+		}
+		var res *EvalResult
+		if res, err = p.Evaluate(ctx, t.Eval, EvalOptions{}); err == nil {
+			report.Eval = res.Summary()
+			logf("eval: %d/%d questions fully covered, %.0f%% of expected facts in context", res.Passed, res.Cases, 100*res.Coverage)
+			evalJSON, _ := json.Marshal(res)
+			reportJSON, _ := json.Marshal(report)
+			err = errors.Join(store.SetMeta(ctx, "eval", string(evalJSON)), store.SetMeta(ctx, "report", string(reportJSON)))
+		}
+	}
 	if err != nil {
 		store.Close()
 		os.Remove(tmp)
@@ -303,6 +374,45 @@ func (t *Trainer) Train(ctx context.Context, spec Spec, sources []Source, outPat
 	return report, nil
 }
 
+// sameKnowledge reports whether two unit bodies filed under one title say
+// the same thing: at least half the keywords of the shorter one occur in
+// the other.
+func sameKnowledge(a, b string) bool {
+	ka, kb := textutil.Keywords(a), textutil.Keywords(b)
+	if len(ka) > len(kb) {
+		ka, kb = kb, ka
+	}
+	if len(ka) == 0 {
+		return true
+	}
+	in := make(map[string]bool, len(kb))
+	for _, w := range kb {
+		in[w] = true
+	}
+	shared := 0
+	for _, w := range ka {
+		if in[w] {
+			shared++
+		}
+	}
+	return 2*shared >= len(ka)
+}
+
+// sectionOf is the most specific part of a chunk title ("doc > A > B" -> "B").
+func sectionOf(chunkTitle string) string {
+	if i := strings.LastIndex(chunkTitle, " > "); i >= 0 {
+		return chunkTitle[i+3:]
+	}
+	return chunkTitle
+}
+
+// embedText is what represents a node in vector space: title and body.
+func embedText(n *graph.Node) string {
+	return textutil.Truncate(n.Title+"\n"+n.Body, 6000)
+}
+
+// normalizeKind maps a model-supplied kind to a known one; anything
+// unrecognized is filed as reference information.
 func normalizeKind(k string) graph.Kind {
 	k = strings.ToLower(strings.TrimSpace(k))
 	for _, known := range UnitKinds {
@@ -310,15 +420,15 @@ func normalizeKind(k string) graph.Kind {
 			return known
 		}
 	}
-	if k == "fact" {
-		return KindReference
-	}
 	return KindReference
 }
 
 func (t *Trainer) synthesizeCore(ctx context.Context, spec Spec, units []*unit) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "PERSONA BRIEF\nName: %s\nRole: %s\nDescription: %s\nTone: %s\n", spec.Name, spec.Role, spec.Description, spec.Tone)
+	if len(spec.Expertise) > 0 {
+		fmt.Fprintf(&b, "Expertise: %s\n", strings.Join(spec.Expertise, "; "))
+	}
 	if spec.Language != "" {
 		fmt.Fprintf(&b, "Write the core in: %s\n", spec.Language)
 	}
@@ -354,6 +464,9 @@ func (t *Trainer) synthesizeCore(ctx context.Context, spec Spec, units []*unit) 
 
 	var core strings.Builder
 	core.WriteString(strings.TrimSpace(out.Identity))
+	if len(spec.Expertise) > 0 {
+		core.WriteString("\n\nAreas you cover: " + strings.Join(spec.Expertise, "; ") + ". Anything outside them is out of scope; say so.")
+	}
 	if len(out.Principles) > 0 {
 		core.WriteString("\n\nOperating principles:\n")
 		for _, p := range out.Principles {

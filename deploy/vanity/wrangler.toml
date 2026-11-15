@@ -1,0 +1,10 @@
+name = "go-vicoworks"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+workers_dev = false
+
+# vicoworks.com must be a zone in the same Cloudflare account. Cloudflare
+# creates the DNS record and certificate for the custom domain on deploy.
+routes = [
+  { pattern = "go.vicoworks.com", custom_domain = true },
+]

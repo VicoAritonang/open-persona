@@ -3,16 +3,17 @@
 package server
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"sort"
 	"time"
 
-	"github.com/openpersona/openpersona/llm"
-	"github.com/openpersona/openpersona/memory"
-	"github.com/openpersona/openpersona/persona"
-	"github.com/openpersona/openpersona/recall"
+	"go.vicoworks.com/openpersona/llm"
+	"go.vicoworks.com/openpersona/memory"
+	"go.vicoworks.com/openpersona/persona"
+	"go.vicoworks.com/openpersona/recall"
 )
 
 // Server wires the engines to HTTP handlers. Any field may be nil; the
@@ -21,6 +22,9 @@ type Server struct {
 	Memory   *memory.Engine
 	Personas map[string]*persona.Persona
 	Chat     llm.Client // model that speaks for personas
+	// APIKey, if set, must be sent as "Authorization: Bearer <key>" on every
+	// request except /healthz.
+	APIKey string
 }
 
 // Handler returns the HTTP API.
@@ -39,7 +43,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/personas", s.listPersonas)
 	mux.HandleFunc("POST /v1/personas/{name}/prompt", s.personaPrompt)
 	mux.HandleFunc("POST /v1/personas/{name}/chat", s.personaChat)
-	return mux
+	if s.APIKey == "" {
+		return mux
+	}
+	want := []byte("Bearer " + s.APIKey)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := []byte(r.Header.Get("Authorization"))
+		if r.URL.Path != "/healthz" && subtle.ConstantTimeCompare(got, want) != 1 {
+			fail(w, http.StatusUnauthorized, errors.New("missing or invalid API key"))
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -158,16 +173,25 @@ func (s *Server) personaPrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Query string `json:"query"`
+		// Units and Sources override the pack's retrieval budget. An agent
+		// that calls this endpoint as a knowledge tool, once per sub-question,
+		// can ask for fewer units per call.
+		Units   int `json:"units"`
+		Sources int `json:"sources"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	k, err := p.Retrieve(r.Context(), req.Query, persona.RetrieveOptions{})
+	if req.Units > 64 || req.Sources > 16 {
+		fail(w, http.StatusBadRequest, errors.New("at most 64 units and 16 sources"))
+		return
+	}
+	k, err := p.Retrieve(r.Context(), req.Query, persona.RetrieveOptions{Units: req.Units, Sources: req.Sources})
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"system": p.SystemPrompt(k), "units": toJSON(k.Units)})
+	writeJSON(w, 200, map[string]any{"system": p.SystemPrompt(k), "units": toJSON(k.Units), "sources": toJSON(k.Sources)})
 }
 
 func (s *Server) personaChat(w http.ResponseWriter, r *http.Request) {

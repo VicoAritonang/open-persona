@@ -20,7 +20,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/openpersona/openpersona/internal/textutil"
+	"go.vicoworks.com/openpersona/internal/textutil"
 )
 
 // Kind labels what a node is. The kernel does not interpret kinds; engines
@@ -216,6 +216,29 @@ func (s *Store) Freeze(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// SetFileFormat stamps the file header with an application ID and a format
+// version (SQLite's application_id and user_version). Engines that ship a
+// graph as a file use it so the file identifies itself; Freeze keeps both.
+func (s *Store) SetFileFormat(ctx context.Context, appID, version int32) error {
+	if s.readOnly {
+		return ErrReadOnly
+	}
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA application_id = %d; PRAGMA user_version = %d`, appID, version))
+	return err
+}
+
+// FileFormat returns the application ID and format version stamped by
+// SetFileFormat (both 0 when the file was never stamped).
+func (s *Store) FileFormat(ctx context.Context) (appID, version int32, err error) {
+	if err = s.db.QueryRowContext(ctx, `PRAGMA application_id`).Scan(&appID); err != nil {
+		return 0, 0, err
+	}
+	err = s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version)
+	return appID, version, err
 }
 
 func unix(t time.Time) int64 {

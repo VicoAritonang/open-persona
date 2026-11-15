@@ -18,6 +18,7 @@ var Providers = map[string]struct{ BaseURL, KeyEnv string }{
 const (
 	DefaultExtractModel = "openai:gpt-4o-mini"             // high-volume structured extraction
 	DefaultChatModel    = "openrouter:typesafe/jev-router" // user-facing answers
+	DefaultEmbedModel   = "openai:text-embedding-3-small"  // semantic retrieval
 )
 
 // New builds a client from a "provider:model" spec such as

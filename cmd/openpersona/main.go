@@ -17,30 +17,40 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openpersona/openpersona/graph"
-	"github.com/openpersona/openpersona/llm"
-	"github.com/openpersona/openpersona/memory"
-	"github.com/openpersona/openpersona/persona"
-	"github.com/openpersona/openpersona/server"
+	"go.vicoworks.com/openpersona/graph"
+	"go.vicoworks.com/openpersona/llm"
+	"go.vicoworks.com/openpersona/memory"
+	"go.vicoworks.com/openpersona/persona"
+	"go.vicoworks.com/openpersona/registry"
+	"go.vicoworks.com/openpersona/server"
 )
 
 const usage = `openpersona - persona and context engineering
 
 Persona (train once, serve read-only):
-  openpersona train   -spec spec.json -src <file|dir> -out finance.persona
-  openpersona inspect -pack finance.persona
-  openpersona chat    -pack finance.persona [-q "question"] [-show] [-db mem.db -scope user1]
+  openpersona train   -spec spec.json -src <file|dir> -out fina.persona [-eval eval.json]
+  openpersona inspect -pack fina.persona [-units]
+  openpersona eval    -pack fina.persona -set eval.json [-answer] [-v]
+  openpersona chat    -pack fina.persona [-q "question"] [-show] [-db mem.db -scope user1]
+
+Registry (packs in Postgres / Neon; URL from NEON_DB_URL):
+  openpersona registry migrate | status | list | versions -id fina
+  openpersona registry set-status -id fina -version 1.0.0 -status deprecated
+  openpersona push -pack fina.persona [-status draft] [-visibility private] [-notes "..."]
+  openpersona pull -id fina [-version 1.0.0] [-out fina.persona]
 
 Memory (read-write context):
   openpersona remember -db mem.db -scope user1 -file conversation.json
   openpersona recall   -db mem.db -scope user1 -q "question" [-history] [-rerank]
 
 Server:
-  openpersona serve -addr :8080 [-db mem.db] [-personas dir]
+  openpersona serve -addr :8080 [-db mem.db] [-personas dir] [-registry fina,other@1.0.0]
 
-Keys are read from .env (OPENAI_API_KEY, OPENROUTER_API_KEY).
+Keys are read from .env (OPENAI_API_KEY, OPENROUTER_API_KEY, NEON_DB_URL).
 Models: OPENPERSONA_EXTRACT_MODEL (default ` + llm.DefaultExtractModel + `),
-        OPENPERSONA_CHAT_MODEL    (default ` + llm.DefaultChatModel + `).
+        OPENPERSONA_CHAT_MODEL    (default ` + llm.DefaultChatModel + `),
+        OPENPERSONA_EMBED_MODEL   (default ` + llm.DefaultEmbedModel + `; "off" disables).
+Server: OPENPERSONA_API_KEY requires "Authorization: Bearer <key>" on every request.
 `
 
 func main() {
@@ -56,6 +66,7 @@ func main() {
 	commands := map[string]func(context.Context, []string) error{
 		"train": train, "inspect": inspect, "chat": chat,
 		"remember": remember, "recall": recallCmd, "serve": serve,
+		"eval": evalCmd, "push": push, "pull": pull, "registry": registryCmd,
 	}
 	cmd, ok := commands[os.Args[1]]
 	if !ok {
@@ -73,6 +84,41 @@ func extractModel() (*llm.OpenAI, error) {
 
 func chatModel() (*llm.OpenAI, error) {
 	return llm.FromEnv("OPENPERSONA_CHAT_MODEL", llm.DefaultChatModel)
+}
+
+// embedModel returns the embedding client and its spec, or nil when
+// embeddings are turned off (OPENPERSONA_EMBED_MODEL=off) or unavailable.
+func embedModel() (*llm.OpenAI, string) {
+	spec := os.Getenv("OPENPERSONA_EMBED_MODEL")
+	if spec == "" {
+		spec = llm.DefaultEmbedModel
+	}
+	if spec == "off" {
+		return nil, ""
+	}
+	model, err := llm.New(spec)
+	if err != nil {
+		log.Printf("note: %v; running without embeddings", err)
+		return nil, ""
+	}
+	return model, spec
+}
+
+// openPersona opens a pack and, if it carries vectors, connects the
+// embedding model it was trained with.
+func openPersona(path string) (*persona.Persona, error) {
+	p, err := persona.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if p.EmbedModel != "" && os.Getenv("OPENPERSONA_EMBED_MODEL") != "off" {
+		if model, err := llm.New(p.EmbedModel); err == nil {
+			p.Embedder = model
+		} else {
+			log.Printf("note: %v; %s runs without semantic retrieval", err, filepath.Base(path))
+		}
+	}
+	return p, nil
 }
 
 // readSources loads one file, or every .md/.txt file under a directory.
@@ -116,6 +162,7 @@ func train(ctx context.Context, args []string) error {
 	src := fs.String("src", "", "training material: a file, or a directory of .md/.txt files")
 	out := fs.String("out", "", "output pack file")
 	workers := fs.Int("workers", 6, "parallel extraction calls")
+	evalPath := fs.String("eval", "", "held-out question set (JSON) to score before the pack is frozen")
 	fs.Parse(args)
 	if *specPath == "" || *src == "" || *out == "" {
 		return errors.New("train needs -spec, -src and -out")
@@ -138,7 +185,15 @@ func train(ctx context.Context, args []string) error {
 	}
 	meter := llm.NewMeter(model)
 	start := time.Now()
-	tr := persona.Trainer{LLM: meter, Concurrency: *workers, Logf: log.Printf}
+	tr := persona.Trainer{LLM: meter, Concurrency: *workers, Logf: log.Printf, TrainModel: modelSpec("OPENPERSONA_EXTRACT_MODEL", llm.DefaultExtractModel)}
+	if emb, spec := embedModel(); emb != nil {
+		tr.Embedder, tr.EmbedModel = emb, spec
+	}
+	if *evalPath != "" {
+		if tr.Eval, err = readEvalSet(*evalPath); err != nil {
+			return err
+		}
+	}
 	report, err := tr.Train(ctx, spec, sources, *out)
 	if err != nil {
 		return err
@@ -149,9 +204,29 @@ func train(ctx context.Context, args []string) error {
 	return nil
 }
 
+func modelSpec(env, def string) string {
+	if v := os.Getenv(env); v != "" {
+		return v
+	}
+	return def
+}
+
+func readEvalSet(path string) ([]persona.EvalCase, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cases []persona.EvalCase
+	if err := json.Unmarshal(data, &cases); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return cases, nil
+}
+
 func inspect(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
 	pack := fs.String("pack", "", "persona pack")
+	units := fs.Bool("units", false, "print every knowledge unit")
 	fs.Parse(args)
 	p, err := persona.Open(*pack)
 	if err != nil {
@@ -162,7 +237,22 @@ func inspect(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s - %s\n\n%s\n\nnodes:", p.Spec.Name, p.Spec.Role, p.Core)
+	m, err := p.Manifest(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s@%s - %s - %s (pack format %d)\n", m.Spec.ID, m.Spec.Version, p.Spec.Name, p.Spec.Role, m.Format)
+	if !m.TrainedAt.IsZero() {
+		fmt.Printf("trained %s with %s", m.TrainedAt.Format(time.RFC3339), orDefault(m.TrainModel, "(unknown model)"))
+		if m.EmbedModel != "" {
+			fmt.Printf(", embeddings %s", m.EmbedModel)
+		}
+		fmt.Println()
+	}
+	if m.Eval != nil {
+		fmt.Printf("eval: %d/%d questions fully covered, %.0f%% of expected facts retrieved\n", m.Eval.Passed, m.Eval.Cases, 100*m.Eval.Coverage)
+	}
+	fmt.Printf("\n%s\n\nnodes:", p.Core)
 	kinds := make([]string, 0, len(stats))
 	for k := range stats {
 		kinds = append(kinds, string(k))
@@ -172,7 +262,222 @@ func inspect(ctx context.Context, args []string) error {
 		fmt.Printf(" %s=%d", k, stats[graph.Kind(k)])
 	}
 	fmt.Println()
+	if *units {
+		list, err := p.Units(ctx)
+		if err != nil {
+			return err
+		}
+		for _, u := range list {
+			fmt.Printf("\n[%s] %s  {%s}\n%s\n", u.Kind, u.Title, strings.Join(u.Tags, ", "), u.Body)
+		}
+	}
 	return nil
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+func evalCmd(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("eval", flag.ExitOnError)
+	pack := fs.String("pack", "", "persona pack")
+	set := fs.String("set", "", "question set (JSON): [{\"q\":\"...\",\"expect\":[\"...\"]}]")
+	answer := fs.Bool("answer", false, "also answer each question with the chat model and check the answers (one call per question)")
+	verbose := fs.Bool("v", false, "print every question, not only failures")
+	fs.Parse(args)
+	if *pack == "" || *set == "" {
+		return errors.New("eval needs -pack and -set")
+	}
+	cases, err := readEvalSet(*set)
+	if err != nil {
+		return err
+	}
+	p, err := openPersona(*pack)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	opt := persona.EvalOptions{}
+	if *answer {
+		if opt.Chat, err = chatModel(); err != nil {
+			return err
+		}
+	}
+	start := time.Now()
+	res, err := p.Evaluate(ctx, cases, opt)
+	if err != nil {
+		return err
+	}
+	for _, r := range res.Results {
+		failed := len(r.Missing) > 0 || len(r.AnswerMissing) > 0
+		if !failed && !*verbose {
+			continue
+		}
+		mark := "ok  "
+		if failed {
+			mark = "FAIL"
+		}
+		fmt.Printf("%s %s\n     top: %s\n", mark, r.Q, strings.Join(r.TopUnits, " | "))
+		if len(r.Missing) > 0 {
+			fmt.Printf("     not retrieved: %s\n", strings.Join(r.Missing, ", "))
+		}
+		if len(r.AnswerMissing) > 0 {
+			fmt.Printf("     not in answer: %s\n", strings.Join(r.AnswerMissing, ", "))
+		}
+		if *verbose && r.Answer != "" {
+			fmt.Printf("     answer: %s\n", strings.ReplaceAll(r.Answer, "\n", "\n             "))
+		}
+	}
+	fmt.Printf("\nretrieval: %d/%d questions fully covered, %.0f%% of expected facts in context\n", res.Passed, res.Cases, 100*res.Coverage)
+	if res.Answered {
+		fmt.Printf("answers:   %d/%d fully correct, %.0f%% of expected facts in answers (%d calls, %d prompt + %d completion tokens)\n",
+			res.AnswerPassed, res.Cases, 100*res.AnswerCoverage, res.Usage.Calls, res.Usage.PromptTokens, res.Usage.CompletionTokens)
+	}
+	log.Printf("(%s)", time.Since(start).Round(time.Millisecond))
+	return nil
+}
+
+func openRegistry(ctx context.Context) (*registry.Registry, error) {
+	return registry.Open(ctx, registry.URLFromEnv(), registry.Options{Schema: os.Getenv("OPENPERSONA_REGISTRY_SCHEMA")})
+}
+
+func printJSON(v any) {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	enc.Encode(v)
+}
+
+func push(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("push", flag.ExitOnError)
+	pack := fs.String("pack", "", "persona pack to upload")
+	status := fs.String("status", registry.StatusPublished, "published or draft")
+	visibility := fs.String("visibility", "", "private, unlisted or public (default: private for a new persona, unchanged otherwise)")
+	owner := fs.String("owner", "", "owner recorded when the persona is first registered")
+	notes := fs.String("notes", "", "release notes for this version")
+	fs.Parse(args)
+	if *pack == "" {
+		return errors.New("push needs -pack")
+	}
+	reg, err := openRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+	by := os.Getenv("USERNAME")
+	if by == "" {
+		by = os.Getenv("USER")
+	}
+	v, created, err := reg.Push(ctx, *pack, registry.PushOptions{Status: *status, Visibility: *visibility, Owner: *owner, Notes: *notes, PublishedBy: by})
+	if err != nil {
+		return err
+	}
+	if created {
+		log.Printf("pushed %s@%s (%s, %d bytes, sha256 %s)", v.PersonaID, v.Version, v.Status, v.Size, v.SHA256[:12])
+	} else {
+		log.Printf("%s@%s is already in the registry with identical content; nothing to do", v.PersonaID, v.Version)
+	}
+	return nil
+}
+
+func pull(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("pull", flag.ExitOnError)
+	id := fs.String("id", "", "persona id")
+	version := fs.String("version", "", "version (default: latest published)")
+	out := fs.String("out", "", "output file (default: <id>.persona)")
+	fs.Parse(args)
+	if *id == "" {
+		return errors.New("pull needs -id")
+	}
+	if *out == "" {
+		*out = *id + persona.PackExt
+	}
+	reg, err := openRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+	v, downloaded, err := reg.Pull(ctx, *id, *version, *out)
+	if err != nil {
+		return err
+	}
+	if downloaded {
+		log.Printf("pulled %s@%s to %s (%d bytes, sha256 verified)", v.PersonaID, v.Version, *out, v.Size)
+	} else {
+		log.Printf("%s already holds %s@%s", *out, v.PersonaID, v.Version)
+	}
+	if v.Status == registry.StatusDeprecated {
+		log.Printf("warning: %s@%s is deprecated", v.PersonaID, v.Version)
+	}
+	return nil
+}
+
+func registryCmd(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("registry needs a subcommand: migrate, status, list, versions, set-status")
+	}
+	fs := flag.NewFlagSet("registry "+args[0], flag.ExitOnError)
+	id := fs.String("id", "", "persona id")
+	version := fs.String("version", "", "version")
+	status := fs.String("status", "", "draft, published, deprecated or yanked")
+	fs.Parse(args[1:])
+	reg, err := openRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+	switch args[0] {
+	case "migrate":
+		applied, err := reg.Migrate(ctx)
+		if err != nil {
+			return err
+		}
+		if len(applied) == 0 {
+			log.Printf("registry schema is up to date")
+		} else {
+			log.Printf("applied migrations %v", applied)
+		}
+		return nil
+	case "status":
+		st, err := reg.Status(ctx)
+		if err != nil {
+			return err
+		}
+		printJSON(st)
+		if len(st.Migrations) == 0 {
+			log.Printf("schema %q is not set up; run: openpersona registry migrate", st.Schema)
+		}
+		return nil
+	case "list":
+		entries, err := reg.List(ctx)
+		if err != nil {
+			return err
+		}
+		printJSON(entries)
+		return nil
+	case "versions":
+		if *id == "" {
+			return errors.New("registry versions needs -id")
+		}
+		vs, err := reg.Versions(ctx, *id)
+		if err != nil {
+			return err
+		}
+		printJSON(vs)
+		return nil
+	case "set-status":
+		if *id == "" || *version == "" || *status == "" {
+			return errors.New("registry set-status needs -id, -version and -status")
+		}
+		if err := reg.SetStatus(ctx, *id, *version, *status); err != nil {
+			return err
+		}
+		log.Printf("%s@%s is now %s", *id, *version, *status)
+		return nil
+	}
+	return fmt.Errorf("unknown registry subcommand %q", args[0])
 }
 
 // openMemory opens a memory engine on db. Extraction is enabled when the
@@ -190,6 +495,9 @@ func openMemory(db string) (*memory.Engine, *graph.Store, *llm.Meter, error) {
 	} else {
 		log.Printf("note: %v; running memory in raw-only mode", err)
 	}
+	if emb, _ := embedModel(); emb != nil {
+		cfg.Embedder = emb
+	}
 	eng, err := memory.New(cfg)
 	if err != nil {
 		store.Close()
@@ -206,7 +514,7 @@ func chat(ctx context.Context, args []string) error {
 	db := fs.String("db", "", "memory database, to remember this user across chats")
 	scope := fs.String("scope", "default", "memory scope (user id)")
 	fs.Parse(args)
-	p, err := persona.Open(*pack)
+	p, err := openPersona(*pack)
 	if err != nil {
 		return err
 	}
@@ -338,9 +646,36 @@ func serve(ctx context.Context, args []string) error {
 	addr := fs.String("addr", ":8080", "listen address")
 	db := fs.String("db", "memory.db", "memory database")
 	dir := fs.String("personas", "", "directory of *.persona packs to serve")
+	fromRegistry := fs.String("registry", "", "comma-separated persona ids (id or id@version) to pull from the registry into -personas before serving")
 	fs.Parse(args)
 
-	srv := &server.Server{Personas: make(map[string]*persona.Persona)}
+	if *fromRegistry != "" {
+		if *dir == "" {
+			return errors.New("-registry needs -personas: the directory packs are pulled into")
+		}
+		if err := os.MkdirAll(*dir, 0o755); err != nil {
+			return err
+		}
+		reg, err := openRegistry(ctx)
+		if err != nil {
+			return err
+		}
+		for _, ref := range strings.Split(*fromRegistry, ",") {
+			id, version, _ := strings.Cut(strings.TrimSpace(ref), "@")
+			v, downloaded, err := reg.Pull(ctx, id, version, filepath.Join(*dir, id+persona.PackExt))
+			if err != nil {
+				reg.Close()
+				return err
+			}
+			log.Printf("registry: %s@%s (%s)", v.PersonaID, v.Version, map[bool]string{true: "downloaded", false: "cached"}[downloaded])
+		}
+		reg.Close()
+	}
+
+	srv := &server.Server{Personas: make(map[string]*persona.Persona), APIKey: os.Getenv("OPENPERSONA_API_KEY")}
+	if srv.APIKey == "" {
+		log.Printf("warning: OPENPERSONA_API_KEY is not set; the API accepts unauthenticated requests")
+	}
 	eng, store, _, err := openMemory(*db)
 	if err != nil {
 		return err
@@ -355,7 +690,7 @@ func serve(ctx context.Context, args []string) error {
 			return err
 		}
 		for _, path := range packs {
-			p, err := persona.Open(path)
+			p, err := openPersona(path)
 			if err != nil {
 				return err
 			}

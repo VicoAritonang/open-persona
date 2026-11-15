@@ -7,18 +7,26 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/openpersona/openpersona/graph"
-	"github.com/openpersona/openpersona/internal/textutil"
-	"github.com/openpersona/openpersona/llm"
-	"github.com/openpersona/openpersona/recall"
+	"go.vicoworks.com/openpersona/graph"
+	"go.vicoworks.com/openpersona/internal/textutil"
+	"go.vicoworks.com/openpersona/llm"
+	"go.vicoworks.com/openpersona/recall"
 )
 
 // Persona is a trained pack opened for serving. It never writes: the file
 // is opened read-only, so runtime traffic cannot alter the persona.
 type Persona struct {
-	Spec  Spec
-	Core  string // identity block, part of every prompt
-	store *graph.Store
+	Spec Spec
+	Core string // identity block, part of every prompt
+	// EmbedModel is the "provider:model" the pack was embedded with, or ""
+	// if it has no vectors. Set Embedder to a client for that model to turn
+	// on semantic retrieval.
+	EmbedModel string
+	// Embedder embeds queries. Optional; without it retrieval is lexical + graph.
+	Embedder llm.Embedder
+
+	store  *graph.Store
+	format int32
 }
 
 // Open loads a pack produced by Trainer.Train.
@@ -29,6 +37,19 @@ func Open(path string) (*Persona, error) {
 	}
 	ctx := context.Background()
 	p := &Persona{store: store}
+	appID, format, err := store.FileFormat(ctx)
+	switch {
+	case err != nil:
+		store.Close()
+		return nil, fmt.Errorf("persona: %s is not a persona pack: %w", path, err)
+	case appID != PackApplicationID && appID != 0:
+		store.Close()
+		return nil, fmt.Errorf("persona: %s is not a persona pack (application id %#x)", path, appID)
+	case format > PackFormat:
+		store.Close()
+		return nil, fmt.Errorf("persona: %s has pack format %d; this build reads up to %d, upgrade openpersona", path, format, PackFormat)
+	}
+	p.format = format
 	specJSON, err := store.GetMeta(ctx, "spec")
 	if err != nil || specJSON == "" {
 		store.Close()
@@ -38,12 +59,16 @@ func Open(path string) (*Persona, error) {
 		store.Close()
 		return nil, fmt.Errorf("persona: %s: bad spec: %w", path, err)
 	}
+	if p.Spec.ID == "" { // packs from before IDs existed
+		p.Spec.ID = Slug(p.Spec.Name)
+	}
 	cores, err := store.List(ctx, scope, KindCore, 1)
 	if err != nil || len(cores) == 0 {
 		store.Close()
 		return nil, fmt.Errorf("persona: %s has no core", path)
 	}
 	p.Core = cores[0].Body
+	p.EmbedModel, _ = store.GetMeta(ctx, "embed_model")
 	return p, nil
 }
 
@@ -57,12 +82,20 @@ func (p *Persona) Stats(ctx context.Context) (map[graph.Kind]int, error) {
 
 // RetrieveOptions tunes retrieval. The zero value is a good default.
 type RetrieveOptions struct {
-	Units    int        // knowledge units to retrieve (default 8)
-	Sources  int        // verbatim source excerpts to add (default 2; -1 for none)
+	Units    int        // knowledge units to retrieve (default: the pack's spec, else 8)
+	Sources  int        // verbatim source excerpts to add (default: the pack's spec, else 2; -1 for none)
 	Reranker llm.Client // optional LLM rerank (one extra call)
 }
 
-func (o *RetrieveOptions) defaults() {
+func (o *RetrieveOptions) defaults(d *RetrieveDefaults) {
+	if d != nil {
+		if o.Units <= 0 {
+			o.Units = d.Units
+		}
+		if o.Sources == 0 {
+			o.Sources = d.Sources
+		}
+	}
 	if o.Units <= 0 {
 		o.Units = 8
 	}
@@ -82,7 +115,7 @@ type Knowledge struct {
 // Retrieve finds the knowledge relevant to query. It makes no LLM call
 // unless a reranker is set.
 func (p *Persona) Retrieve(ctx context.Context, query string, opt RetrieveOptions) (*Knowledge, error) {
-	opt.defaults()
+	opt.defaults(p.Spec.Retrieve)
 	channels := []recall.Channel{
 		// Titles are short and specific, so a title match counts for more.
 		{Name: "units", Weight: 1, Run: recall.Text(p.store, scope, UnitKinds, query, graph.SearchOptions{Limit: opt.Units * 3, TitleWeight: 3})},
@@ -91,6 +124,26 @@ func (p *Persona) Retrieve(ctx context.Context, query string, opt RetrieveOption
 	if opt.Sources > 0 {
 		channels = append(channels, recall.Channel{Name: "sources", Weight: 1,
 			Run: recall.Text(p.store, scope, []graph.Kind{KindSource}, query, graph.SearchOptions{Limit: opt.Sources * 2})})
+	}
+	if p.Embedder != nil && p.EmbedModel != "" {
+		kinds := UnitKinds
+		if opt.Sources > 0 {
+			kinds = append(append([]graph.Kind{}, UnitKinds...), KindSource)
+		}
+		channels = append(channels, recall.Channel{Name: "vector", Weight: 1, Optional: true,
+			Run: recall.Vector(p.store, p.Embedder, nil, scope, kinds, query, graph.SearchOptions{Limit: opt.Units * 3})})
+	}
+	// A request with several parts ("I live in Stockholm. I have a meeting
+	// in Kariya on 12 March. Then three days in Kyoto.") gets a channel per
+	// part, so the strongest part does not crowd the others out of the budget.
+	for i, f := range facets(query) {
+		lim := graph.SearchOptions{Limit: opt.Units, TitleWeight: 3}
+		channels = append(channels, recall.Channel{Name: fmt.Sprintf("facet%d", i), Weight: 0.5,
+			Run: recall.Text(p.store, scope, UnitKinds, f, lim)})
+		if p.Embedder != nil && p.EmbedModel != "" {
+			channels = append(channels, recall.Channel{Name: fmt.Sprintf("facet%d-vector", i), Weight: 0.5, Optional: true,
+				Run: recall.Vector(p.store, p.Embedder, nil, scope, UnitKinds, f, graph.SearchOptions{Limit: opt.Units})})
+		}
 	}
 	items, err := recall.Fuse(ctx, channels)
 	if err != nil {
@@ -115,6 +168,42 @@ func (p *Persona) Retrieve(ctx context.Context, query string, opt RetrieveOption
 		k.Units = k.Units[:opt.Units]
 	}
 	return k, nil
+}
+
+// maxFacets caps the extra channels (and, with embeddings, the extra
+// embedding calls) one query can add.
+const maxFacets = 4
+
+// facets splits a multi-part query into its sentences. It returns nil for a
+// single-part query, which the whole-query channels already cover. A
+// sentence needs three keywords to count, and a dot only ends a sentence
+// before a space, so "Rp 20.000.000" stays whole.
+func facets(query string) []string {
+	var parts []string
+	start := 0
+	for i, r := range query {
+		end := r == '\n' || r == '?' || r == '!' || r == ';' ||
+			(r == '.' && (i+1 == len(query) || query[i+1] == ' '))
+		if !end {
+			continue
+		}
+		parts = append(parts, query[start:i])
+		start = i + 1
+	}
+	parts = append(parts, query[start:])
+	var out []string
+	for _, s := range parts {
+		if s = strings.TrimSpace(s); len(textutil.Keywords(s)) >= 3 {
+			out = append(out, s)
+		}
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	if len(out) > maxFacets {
+		out = out[:maxFacets]
+	}
+	return out
 }
 
 // SystemPrompt renders the persona for one query: the identity core, the

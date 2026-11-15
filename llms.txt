@@ -1,0 +1,34 @@
+# OpenPersona
+
+> Go library and HTTP service for persona and context engineering: long-term memory for AI agents (read-write) and trained, read-only personas backed by a knowledge graph. Pure Go, SQLite storage, no external services.
+
+Module: `go.vicoworks.com/openpersona` (source: https://github.com/VicoAritonang/open-persona). Requires Go 1.26+.
+
+## Packages
+
+- `go.vicoworks.com/openpersona/memory`: `memory.New(memory.Config{Store, Extractor, Embedder, Reranker})` returns an `*Engine`. `Add(ctx, scope, []memory.Message)` stores messages; `Search(ctx, scope, query, memory.SearchOptions{})` returns `*Result` with `Facts`, `Episodes` and `Context(maxTokens) string`; `Flush(ctx)` waits for background extraction; `Close()` on shutdown.
+- `go.vicoworks.com/openpersona/persona`: `persona.Trainer{LLM, Embedder, EmbedModel}.Train(ctx, persona.Spec, []persona.Source, outPath)` writes a frozen pack. `persona.Open(path)` returns a read-only `*Persona` with `Retrieve(ctx, query, persona.RetrieveOptions{})`, `SystemPrompt(*Knowledge) string` and `Chat(ctx, llm.Client, []llm.Message, persona.ChatOptions{Context})`.
+- `go.vicoworks.com/openpersona/graph`: `graph.Open(path, graph.Options{ReadOnly, Analyzer})` returns the `*Store` both engines use.
+- `go.vicoworks.com/openpersona/llm`: `llm.New("provider:model")` returns a client that implements both `llm.Client` and `llm.Embedder`. Providers: `openai`, `openrouter`. `llm.LoadDotEnv()` loads `.env`.
+- `go.vicoworks.com/openpersona/recall`: `recall.Channel`, `recall.Fuse`, `recall.Rerank` for custom retrieval.
+- `go.vicoworks.com/openpersona/server`: `server.Server{Memory, Personas, Chat, APIKey}.Handler()` returns an `http.Handler`.
+
+## Rules for correct use
+
+- Scope is the isolation boundary. Derive it from the authenticated session, never from model output.
+- `Add` returns before facts are extracted. Call `Flush` only in tests and batch jobs.
+- One `Engine` per database file, shared by all goroutines. Close the engine before the store.
+- A persona pack is immutable. To change a persona, retrain and replace the file. Set `p.Embedder` to a client for `p.EmbedModel` when it is non-empty.
+- A pack is versioned by `Spec.ID` and `Spec.Version` (semver). In the registry (`go.vicoworks.com/openpersona/registry`, Postgres/Neon) id@version is immutable: bump the version when retraining. `registry.Open(ctx, registry.URLFromEnv(), registry.Options{})`, then `Migrate`, `Push(ctx, path, PushOptions{})`, `Pull(ctx, id, version, outPath)` ("" = latest published). See docs/REGISTRY.md.
+- `Spec.Retrieve` (`{"units": 20, "sources": 3}` in spec.json) sets a pack's default retrieval budget; `RetrieveOptions` still override it. Multi-sentence queries also retrieve per sentence. For agents, expose `POST /v1/personas/{name}/prompt` with `{"query", "units", "sources"}` as a knowledge tool called once per sub-question (see examples/travel/README.md).
+- `Persona.Evaluate(ctx, []persona.EvalCase{{Q, Expect}}, persona.EvalOptions{})` scores whether expected facts reach the prompt, with no chat call; `Trainer.Eval` does it at training time and stores the result in the pack.
+- Pass conversations to `Persona.Chat` without a system message; the persona supplies it. Put extra context (such as `Result.Context`) in `ChatOptions.Context`.
+- `Result.Context` returns "" when nothing was found; do not add an empty memory block to prompts.
+- Tests should use a fake `llm.Client` (a func type with a `Complete` method); see `memory/memory_test.go`.
+
+## Docs
+
+- [Integration guide](docs/INTEGRATION.md): the agent turn loop, memory as tools, persona + memory, production notes
+- [HTTP API](docs/HTTP_API.md): endpoints for non-Go projects
+- [Design](docs/DESIGN.md): research, decisions, measurements, roadmap
+- [Publishing](docs/PUBLISHING.md): vanity import domain, CI, releases
