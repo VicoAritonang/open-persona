@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"go.vicoworks.com/openpersona/cloud"
-	"go.vicoworks.com/openpersona/llm"
-	"go.vicoworks.com/openpersona/persona"
+	"go.vicoworks.com/open-persona/cloud"
+	"go.vicoworks.com/open-persona/llm"
+	"go.vicoworks.com/open-persona/persona"
 )
 
 // MCP: the Model Context Protocol over streamable HTTP, stateless, with

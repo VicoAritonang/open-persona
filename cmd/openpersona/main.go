@@ -18,13 +18,13 @@ import (
 	"strings"
 	"time"
 
-	"go.vicoworks.com/openpersona/cloud"
-	"go.vicoworks.com/openpersona/graph"
-	"go.vicoworks.com/openpersona/llm"
-	"go.vicoworks.com/openpersona/memory"
-	"go.vicoworks.com/openpersona/persona"
-	"go.vicoworks.com/openpersona/registry"
-	"go.vicoworks.com/openpersona/server"
+	"go.vicoworks.com/open-persona/cloud"
+	"go.vicoworks.com/open-persona/graph"
+	"go.vicoworks.com/open-persona/llm"
+	"go.vicoworks.com/open-persona/memory"
+	"go.vicoworks.com/open-persona/persona"
+	"go.vicoworks.com/open-persona/registry"
+	"go.vicoworks.com/open-persona/server"
 )
 
 const usage = `openpersona - persona and context engineering

@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"go.vicoworks.com/openpersona/graph"
-	"go.vicoworks.com/openpersona/memory"
+	"go.vicoworks.com/open-persona/graph"
+	"go.vicoworks.com/open-persona/memory"
 )
 
 // Raw-only mode: no model configured, so nothing here costs anything.

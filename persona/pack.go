@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"go.vicoworks.com/openpersona/graph"
+	"go.vicoworks.com/open-persona/graph"
 )
 
 // A pack is one SQLite file, distributed with the extension .persona. Its

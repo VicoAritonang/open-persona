@@ -28,13 +28,13 @@ Design goal: the quality of graph-memory systems at a fraction of the cost. Retr
 As a library (Go 1.26+):
 
 ```sh
-go get go.vicoworks.com/openpersona
+go get go.vicoworks.com/open-persona
 ```
 
 As a command-line tool and server:
 
 ```sh
-go install go.vicoworks.com/openpersona/cmd/openpersona@latest
+go install go.vicoworks.com/open-persona/cmd/openpersona@latest
 # or, from a checkout:
 go build -o bin/openpersona ./cmd/openpersona
 # or:
@@ -46,7 +46,7 @@ Put `OPENAI_API_KEY` and `OPENROUTER_API_KEY` in `.env` (see `.env.example`); ad
 ## Use a persona from Go: hosted or local
 
 ```go
-import "go.vicoworks.com/openpersona"
+import openpersona "go.vicoworks.com/open-persona"
 
 client := openpersona.NewClient(apiKey, openpersona.ClientOptions{BaseURL: "https://api.example.com"})
 kora := client.Persona("kora")                                   // runs on the hosted service

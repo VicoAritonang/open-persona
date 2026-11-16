@@ -1,6 +1,6 @@
 # Hosting personas, and the Go library for using them
 
-A persona such as Kora reaches a customer's product in one of two ways. Both use the same Go library, `go.vicoworks.com/openpersona`, and the same `Persona` interface, so a customer can start hosted and move to local (or the reverse) without rewriting their agent.
+A persona such as Kora reaches a customer's product in one of two ways. Both use the same Go library, `go.vicoworks.com/open-persona`, and the same `Persona` interface, so a customer can start hosted and move to local (or the reverse) without rewriting their agent.
 
 | | Hosted | Local |
 |---|---|---|
@@ -15,7 +15,7 @@ A persona such as Kora reaches a customer's product in one of two ways. Both use
 ## The library
 
 ```go
-import "go.vicoworks.com/openpersona"
+import openpersona "go.vicoworks.com/open-persona"
 
 client := openpersona.NewClient(os.Getenv("OPENPERSONA_API_KEY"), openpersona.ClientOptions{
 	BaseURL:   "https://api.example.com",    // Lambda (or CloudFront in front of it)

@@ -15,8 +15,8 @@ import (
 	"os"
 	"time"
 
-	"go.vicoworks.com/openpersona"
-	"go.vicoworks.com/openpersona/llm"
+	openpersona "go.vicoworks.com/open-persona"
+	"go.vicoworks.com/open-persona/llm"
 )
 
 func main() {

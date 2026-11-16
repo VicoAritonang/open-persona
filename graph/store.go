@@ -20,7 +20,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"go.vicoworks.com/openpersona/internal/textutil"
+	"go.vicoworks.com/open-persona/internal/textutil"
 )
 
 // Kind labels what a node is. The kernel does not interpret kinds; engines

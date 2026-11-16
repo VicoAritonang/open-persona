@@ -43,11 +43,11 @@ import (
 	awslambda "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/lambda/types"
 
-	"go.vicoworks.com/openpersona/cloud"
-	"go.vicoworks.com/openpersona/llm"
-	"go.vicoworks.com/openpersona/persona"
-	"go.vicoworks.com/openpersona/registry"
-	"go.vicoworks.com/openpersona/server"
+	"go.vicoworks.com/open-persona/cloud"
+	"go.vicoworks.com/open-persona/llm"
+	"go.vicoworks.com/open-persona/persona"
+	"go.vicoworks.com/open-persona/registry"
+	"go.vicoworks.com/open-persona/server"
 )
 
 var version = "dev"

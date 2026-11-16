@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"go.vicoworks.com/openpersona/cloud"
+	"go.vicoworks.com/open-persona/cloud"
 )
 
 // Keys, jobs, usage and the catalog against a real Postgres, in a

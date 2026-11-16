@@ -6,8 +6,8 @@ import (
 	"sync"
 	"unicode"
 
-	"go.vicoworks.com/openpersona/internal/textutil"
-	"go.vicoworks.com/openpersona/llm"
+	"go.vicoworks.com/open-persona/internal/textutil"
+	"go.vicoworks.com/open-persona/llm"
 )
 
 // EvalCase is one held-out question with the facts a good answer needs.

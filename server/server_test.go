@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"go.vicoworks.com/openpersona/graph"
-	"go.vicoworks.com/openpersona/memory"
+	"go.vicoworks.com/open-persona/graph"
+	"go.vicoworks.com/open-persona/memory"
 )
 
 func TestMemoryEndpointsAndAuth(t *testing.T) {

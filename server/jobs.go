@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"go.vicoworks.com/openpersona/cloud"
-	"go.vicoworks.com/openpersona/persona"
+	"go.vicoworks.com/open-persona/cloud"
+	"go.vicoworks.com/open-persona/persona"
 )
 
 func (s *Server) submitJob(w http.ResponseWriter, r *http.Request) {

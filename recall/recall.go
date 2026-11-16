@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"go.vicoworks.com/openpersona/graph"
-	"go.vicoworks.com/openpersona/internal/textutil"
-	"go.vicoworks.com/openpersona/llm"
+	"go.vicoworks.com/open-persona/graph"
+	"go.vicoworks.com/open-persona/internal/textutil"
+	"go.vicoworks.com/open-persona/llm"
 )
 
 // Channel is one way of finding candidates. Add your own to customize

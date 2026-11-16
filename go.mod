@@ -1,4 +1,4 @@
-module go.vicoworks.com/openpersona
+module go.vicoworks.com/open-persona
 
 go 1.26.0
 

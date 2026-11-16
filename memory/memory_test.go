@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"go.vicoworks.com/openpersona/graph"
-	"go.vicoworks.com/openpersona/llm"
+	"go.vicoworks.com/open-persona/graph"
+	"go.vicoworks.com/open-persona/llm"
 )
 
 type fakeLLM func(req llm.Request) string

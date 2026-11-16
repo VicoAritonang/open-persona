@@ -2,7 +2,7 @@
 
 Two ways in:
 
-- **Go library**: `go get go.vicoworks.com/openpersona`. Everything runs inside your process.
+- **Go library**: `go get go.vicoworks.com/open-persona`. Everything runs inside your process.
 - **HTTP service**: run `openpersona serve` (or the Docker image) and call it from any language. Reference: [HTTP_API.md](HTTP_API.md).
 
 Both expose the same two engines. **Memory** answers "what do we know about this user?" **Persona** answers "who is the agent, and what does it know about this topic?"
@@ -11,10 +11,10 @@ Both expose the same two engines. **Memory** answers "what do we know about this
 
 ```go
 import (
-    "go.vicoworks.com/openpersona/graph"
-    "go.vicoworks.com/openpersona/llm"
-    "go.vicoworks.com/openpersona/memory"
-    "go.vicoworks.com/openpersona/persona"
+    "go.vicoworks.com/open-persona/graph"
+    "go.vicoworks.com/open-persona/llm"
+    "go.vicoworks.com/open-persona/memory"
+    "go.vicoworks.com/open-persona/persona"
 )
 
 llm.LoadDotEnv() // optional: reads .env into the environment

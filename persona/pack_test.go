@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.vicoworks.com/openpersona/graph"
+	"go.vicoworks.com/open-persona/graph"
 )
 
 func TestPackIsStampedAndDescribesItself(t *testing.T) {

@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"go.vicoworks.com/openpersona/persona"
+	"go.vicoworks.com/open-persona/persona"
 )
 
 // ChatMode chooses how a hosted persona's Chat reaches the service.

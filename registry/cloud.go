@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"go.vicoworks.com/openpersona/cloud"
+	"go.vicoworks.com/open-persona/cloud"
 )
 
 // The registry implements the hosted service's stores on the same database.

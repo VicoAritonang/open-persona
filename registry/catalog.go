@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"go.vicoworks.com/openpersona/persona"
+	"go.vicoworks.com/open-persona/persona"
 )
 
 // Catalog serves the latest published version of every persona in the

@@ -44,4 +44,4 @@ jobs:
       # Not fatal: the proxy also picks the version up on the first `go get`.
       - name: Ask the Go proxy to index this version
         continue-on-error: true
-        run: curl -fsS "https://proxy.golang.org/go.vicoworks.com/openpersona/@v/${GITHUB_REF_NAME}.info"
+        run: curl -fsS "https://proxy.golang.org/go.vicoworks.com/open-persona/@v/${GITHUB_REF_NAME}.info"

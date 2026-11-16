@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.vicoworks.com/openpersona/llm"
+	"go.vicoworks.com/open-persona/llm"
 )
 
 type fakeLLM func(req llm.Request) string

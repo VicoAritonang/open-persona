@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"go.vicoworks.com/openpersona/llm"
-	"go.vicoworks.com/openpersona/persona"
+	"go.vicoworks.com/open-persona/llm"
+	"go.vicoworks.com/open-persona/persona"
 )
 
 // The registry test needs a real Postgres. It runs only when

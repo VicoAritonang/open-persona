@@ -1,5 +1,10 @@
 // Package openpersona is the client library for OpenPersona personas, such
-// as Kora, the travel agent. One interface, Persona, works two ways:
+// as Kora, the travel agent. Import it with an explicit name, since the
+// path's last element is not an identifier:
+//
+//	import openpersona "go.vicoworks.com/open-persona"
+//
+// One interface, Persona, works two ways:
 //
 //   - Hosted: the persona runs on the OpenPersona service and is called over
 //     HTTPS (NewClient, then Client.Persona). Nothing to download; answers
@@ -30,9 +35,9 @@ import (
 	"fmt"
 	"os"
 
-	"go.vicoworks.com/openpersona/llm"
-	"go.vicoworks.com/openpersona/persona"
-	"go.vicoworks.com/openpersona/recall"
+	"go.vicoworks.com/open-persona/llm"
+	"go.vicoworks.com/open-persona/persona"
+	"go.vicoworks.com/open-persona/recall"
 )
 
 // Message is one chat message ("user" or "assistant"; the persona supplies

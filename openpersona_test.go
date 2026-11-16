@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"go.vicoworks.com/openpersona/cloud"
-	"go.vicoworks.com/openpersona/llm"
-	"go.vicoworks.com/openpersona/persona"
-	"go.vicoworks.com/openpersona/server"
+	"go.vicoworks.com/open-persona/cloud"
+	"go.vicoworks.com/open-persona/llm"
+	"go.vicoworks.com/open-persona/persona"
+	"go.vicoworks.com/open-persona/server"
 )
 
 // fakeModel extracts two units at training time and answers chats in
