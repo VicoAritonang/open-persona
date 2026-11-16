@@ -1,0 +1,13 @@
+# TLS and reverse proxy in front of openpersona on the EC2 instance.
+# Point a DNS record (e.g. stream.example.com) at the instance's Elastic IP;
+# Caddy obtains the certificate itself.
+stream.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080 {
+		# Pass server-sent events through as they are written.
+		flush_interval -1
+		transport http {
+			read_timeout 15m
+		}
+	}
+}

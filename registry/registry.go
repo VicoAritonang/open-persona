@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go.vicoworks.com/openpersona/cloud"
 	"go.vicoworks.com/openpersona/persona"
 )
 
@@ -41,7 +42,7 @@ const DefaultSchema = "openpersona"
 
 // Errors returned by the registry.
 var (
-	ErrNotFound  = errors.New("registry: not found")
+	ErrNotFound  = fmt.Errorf("registry: %w", cloud.ErrNotFound)
 	ErrImmutable = errors.New("registry: this version already exists with different content; bump the version and retrain")
 	ErrYanked    = errors.New("registry: this version was yanked")
 )
@@ -163,6 +164,20 @@ func (r *Registry) Migrate(ctx context.Context) ([]int, error) {
 		if applied[num] {
 			continue
 		}
+		// A schema created by running the SQL file by hand has the tables
+		// but no record of the migration: record it instead of failing.
+		if marker := migrationMarkers[num]; marker != "" {
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, r.name+"."+marker).Scan(&exists); err != nil {
+				return nil, err
+			}
+			if exists {
+				if _, err := tx.Exec(ctx, r.q(`INSERT INTO {{schema}}.schema_migrations(version, name) VALUES ($1, $2)`), num, base+" (baseline)"); err != nil {
+					return nil, err
+				}
+				continue
+			}
+		}
 		body, err := migrations.ReadFile(f)
 		if err != nil {
 			return nil, err
@@ -177,6 +192,10 @@ func (r *Registry) Migrate(ctx context.Context) ([]int, error) {
 	}
 	return done, tx.Commit(ctx)
 }
+
+// migrationMarkers names, per migration, the last table it creates: its
+// presence means the migration already ran.
+var migrationMarkers = map[int]string{1: "persona_units", 2: "usage_events"}
 
 func (r *Registry) appliedMigrations(ctx context.Context, db interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)

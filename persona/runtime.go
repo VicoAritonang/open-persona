@@ -27,7 +27,11 @@ type Persona struct {
 
 	store  *graph.Store
 	format int32
+	path   string
 }
+
+// Path is the pack file this persona was opened from.
+func (p *Persona) Path() string { return p.path }
 
 // Open loads a pack produced by Trainer.Train.
 func Open(path string) (*Persona, error) {
@@ -36,7 +40,7 @@ func Open(path string) (*Persona, error) {
 		return nil, err
 	}
 	ctx := context.Background()
-	p := &Persona{store: store}
+	p := &Persona{store: store, path: path}
 	appID, format, err := store.FileFormat(ctx)
 	switch {
 	case err != nil:
@@ -110,6 +114,26 @@ func (o *RetrieveOptions) defaults(d *RetrieveDefaults) {
 type Knowledge struct {
 	Units   []recall.Item // compiled knowledge, most relevant first
 	Sources []recall.Item // verbatim excerpts of the training material
+}
+
+// Empty reports whether nothing was retrieved.
+func (k *Knowledge) Empty() bool { return k == nil || (len(k.Units) == 0 && len(k.Sources) == 0) }
+
+// Text renders the retrieved units and excerpts as plain text, the form
+// they take inside the system prompt. It suits a tool result returned to an
+// agent's model.
+func (k *Knowledge) Text() string {
+	if k.Empty() {
+		return ""
+	}
+	var b strings.Builder
+	for _, it := range k.Units {
+		fmt.Fprintf(&b, "\n[%s] %s\n%s\n", it.Node.Kind, it.Node.Title, it.Node.Body)
+	}
+	for _, it := range k.Sources {
+		fmt.Fprintf(&b, "\n[source excerpt] %s\n%s\n", it.Node.Title, textutil.Truncate(it.Node.Body, 2400))
+	}
+	return b.String()
 }
 
 // Retrieve finds the knowledge relevant to query. It makes no LLM call
@@ -211,16 +235,11 @@ func facets(query string) []string {
 func (p *Persona) SystemPrompt(k *Knowledge) string {
 	var b strings.Builder
 	b.WriteString("<role>\n" + p.Core + "\n</role>\n\n<knowledge>\n")
-	if k == nil || (len(k.Units) == 0 && len(k.Sources) == 0) {
+	if k.Empty() {
 		b.WriteString("(Nothing in your knowledge base matches this request.)\n")
 	} else {
 		b.WriteString("This is the part of your own working knowledge that is relevant to the current request. Apply it exactly; rules are binding.\n")
-		for _, it := range k.Units {
-			fmt.Fprintf(&b, "\n[%s] %s\n%s\n", it.Node.Kind, it.Node.Title, it.Node.Body)
-		}
-		for _, it := range k.Sources {
-			fmt.Fprintf(&b, "\n[source excerpt] %s\n%s\n", it.Node.Title, textutil.Truncate(it.Node.Body, 2400))
-		}
+		b.WriteString(k.Text())
 	}
 	b.WriteString("</knowledge>\n\n<instructions>\n")
 	b.WriteString("Answer as this persona. Base every policy, number and procedure on the knowledge above. ")
@@ -256,6 +275,21 @@ type Reply struct {
 // messages is the conversation so far (user/assistant turns, no system
 // message); the persona supplies the system prompt.
 func (p *Persona) Chat(ctx context.Context, c llm.Client, messages []llm.Message, opt ChatOptions) (*Reply, error) {
+	return p.chat(ctx, c, messages, opt, nil)
+}
+
+// ChatStream is Chat with the answer delivered as it is generated:
+// onDelta receives each piece of text. It streams when c implements
+// llm.Streamer; otherwise the whole answer arrives as one piece. The Reply
+// holds the complete answer.
+func (p *Persona) ChatStream(ctx context.Context, c llm.Client, messages []llm.Message, opt ChatOptions, onDelta func(string) error) (*Reply, error) {
+	if onDelta == nil {
+		onDelta = func(string) error { return nil }
+	}
+	return p.chat(ctx, c, messages, opt, onDelta)
+}
+
+func (p *Persona) chat(ctx context.Context, c llm.Client, messages []llm.Message, opt ChatOptions, onDelta func(string) error) (*Reply, error) {
 	// Retrieve on the last two user turns so follow-ups ("and for travel?")
 	// still find the knowledge the conversation is about.
 	var userTurns []string
@@ -275,11 +309,17 @@ func (p *Persona) Chat(ctx context.Context, c llm.Client, messages []llm.Message
 	if opt.Context != "" {
 		system += "\n\n" + opt.Context
 	}
-	resp, err := c.Complete(ctx, llm.Request{
+	req := llm.Request{
 		Messages:    append([]llm.Message{{Role: "system", Content: system}}, messages...),
 		Temperature: opt.Temperature,
 		MaxTokens:   opt.MaxTokens,
-	})
+	}
+	var resp llm.Response
+	if onDelta == nil {
+		resp, err = c.Complete(ctx, req)
+	} else {
+		resp, err = llm.StreamOrComplete(ctx, c, req, onDelta)
+	}
 	if err != nil {
 		return nil, err
 	}

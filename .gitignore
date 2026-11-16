@@ -7,3 +7,5 @@
 *.persona
 /bin/
 /data/
+/deploy/aws/lambda/build/
+/packs/

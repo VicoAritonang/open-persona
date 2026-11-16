@@ -6,12 +6,15 @@ Module: `go.vicoworks.com/openpersona` (source: https://github.com/VicoAritonang
 
 ## Packages
 
+- `go.vicoworks.com/openpersona` (root): the client library. `openpersona.Persona` is one interface for a hosted or a local persona: `ID()`, `Info(ctx)`, `Knowledge(ctx, query, KnowledgeOptions{Units, Sources})` (no LLM), `Chat(ctx, []Message, ChatOptions{Context, MaxTokens})`, `Stream(ctx, msgs, opt, func(delta string) error)`, `Close()`. Hosted: `openpersona.NewClient(apiKey, ClientOptions{BaseURL, StreamURL, ChatMode})` then `client.Persona("kora")` (Chat is async by default: a job, polled); `client.Download(ctx, id, dir)` / `client.OpenLocal(ctx, id, dir, LocalOptions{Chat})` fetch the pack. Local: `openpersona.Open(path, LocalOptions{Chat, Embedder, NoEmbeddings})`. `openpersona.NewKnowledgeTool(ctx, p, ToolOptions{})` returns a tool with `Name`, `Description`, `Parameters`, `Call(ctx, args)`, `OpenAI()`, `Anthropic()`. `openpersona.Ask(ctx, p, question)`.
+- `go.vicoworks.com/openpersona/cloud`: `Principal` (key id, personas, scopes `knowledge`/`chat`/`download`), `Authenticator`, `StaticKey`, `AnyOf`, `JobStore`, `MemoryJobs`, `UsageRecorder`.
+
 - `go.vicoworks.com/openpersona/memory`: `memory.New(memory.Config{Store, Extractor, Embedder, Reranker})` returns an `*Engine`. `Add(ctx, scope, []memory.Message)` stores messages; `Search(ctx, scope, query, memory.SearchOptions{})` returns `*Result` with `Facts`, `Episodes` and `Context(maxTokens) string`; `Flush(ctx)` waits for background extraction; `Close()` on shutdown.
 - `go.vicoworks.com/openpersona/persona`: `persona.Trainer{LLM, Embedder, EmbedModel}.Train(ctx, persona.Spec, []persona.Source, outPath)` writes a frozen pack. `persona.Open(path)` returns a read-only `*Persona` with `Retrieve(ctx, query, persona.RetrieveOptions{})`, `SystemPrompt(*Knowledge) string` and `Chat(ctx, llm.Client, []llm.Message, persona.ChatOptions{Context})`.
 - `go.vicoworks.com/openpersona/graph`: `graph.Open(path, graph.Options{ReadOnly, Analyzer})` returns the `*Store` both engines use.
 - `go.vicoworks.com/openpersona/llm`: `llm.New("provider:model")` returns a client that implements both `llm.Client` and `llm.Embedder`. Providers: `openai`, `openrouter`. `llm.LoadDotEnv()` loads `.env`.
 - `go.vicoworks.com/openpersona/recall`: `recall.Channel`, `recall.Fuse`, `recall.Rerank` for custom retrieval.
-- `go.vicoworks.com/openpersona/server`: `server.Server{Memory, Personas, Chat, APIKey}.Handler()` returns an `http.Handler`.
+- `go.vicoworks.com/openpersona/server`: `server.Server{Memory, Personas | Catalog, Chat, APIKey | Auth, Jobs, Dispatch, Usage, AllowOrigins}.Handler()` returns an `http.Handler` with the REST API, SSE streaming and MCP (`POST /mcp`); `RunJob(ctx, id)` runs an async job. `registry.Catalog{Registry, Dir}` serves packs on demand from Neon; `*registry.Registry` implements `cloud.Authenticator`, `JobStore` and `UsageRecorder`.
 
 ## Rules for correct use
 
@@ -30,5 +33,6 @@ Module: `go.vicoworks.com/openpersona` (source: https://github.com/VicoAritonang
 
 - [Integration guide](docs/INTEGRATION.md): the agent turn loop, memory as tools, persona + memory, production notes
 - [HTTP API](docs/HTTP_API.md): endpoints for non-Go projects
+- [Hosting](docs/HOSTING.md): the client library hosted or local; Lambda + EC2 + Neon deployment
 - [Design](docs/DESIGN.md): research, decisions, measurements, roadmap
 - [Publishing](docs/PUBLISHING.md): vanity import domain, CI, releases

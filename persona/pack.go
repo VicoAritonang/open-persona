@@ -155,3 +155,13 @@ func (p *Persona) Units(ctx context.Context) ([]Unit, error) {
 	}
 	return out, nil
 }
+
+// KnowledgeToolDescription describes this persona's knowledge search to an
+// agent's model, for a tool definition (MCP, OpenAI or Anthropic tools).
+func (s Spec) KnowledgeToolDescription() string {
+	d := fmt.Sprintf("Search the working knowledge of %s (%s).", s.Name, s.Role)
+	if len(s.Expertise) > 0 {
+		d += " Covers: " + strings.Join(s.Expertise, "; ") + "."
+	}
+	return d + " Ask one focused question per call (one place, one rule, one route); call it several times for a multi-part task. Returns knowledge units, not an answer."
+}

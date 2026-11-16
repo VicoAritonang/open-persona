@@ -31,7 +31,19 @@ Prices are planning estimates as of November 2026. Fast-changing facts are marke
 
 Kora's product has its own actuators: `get_flights`, `get_hotels` and `google_search`. Train, bus, ferry and attraction tickets cannot be bought, so Kora's knowledge supplies the routes, fares and how to buy them. The pack does not call these tools. The agent does.
 
-The recommended loop:
+With the Go library (hosted or local, same code; see [docs/HOSTING.md](../../docs/HOSTING.md)):
+
+```go
+client := openpersona.NewClient(os.Getenv("OPENPERSONA_API_KEY"), openpersona.ClientOptions{BaseURL: "https://api.example.com"})
+kora := client.Persona("kora")
+tool, _ := openpersona.NewKnowledgeTool(ctx, kora, openpersona.ToolOptions{})   // "kora_knowledge"
+k, _ := kora.Knowledge(ctx, userRequest, openpersona.KnowledgeOptions{})         // k.System: the agent's system prompt
+// model tools: tool.OpenAI(), get_flights, get_hotels, google_search; route "kora_knowledge" calls to tool.Call
+```
+
+An MCP client gets the same through `POST /mcp` (`kora_knowledge`, `kora_ask`).
+
+The loop, in HTTP terms:
 
 1. **System prompt.** Call `POST /v1/personas/kora/prompt` with the user's request and use the returned `system` as the agent's system prompt. It carries Kora's identity, boundaries and the knowledge for the request as a whole.
 2. **Knowledge as a tool.** Give the agent a `kora_knowledge(query)` tool that calls the same endpoint with a small budget (`{"query": "...", "units": 6, "sources": -1}`) and returns `units`. A trip request has many facets (visa for this passport, this airport transfer, this festival, this city). One retrieval for the whole request has a ceiling. In a live test, a Stockholm-to-Kariya business request missed the Swedish visa rule and the Stockholm–Japan corridor even though both are in the pack. Retrieving once per facet does not have that ceiling.

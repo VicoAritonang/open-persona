@@ -17,6 +17,7 @@ Design goal: the quality of graph-memory systems at a fraction of the cost. Retr
 |---|---|
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Using it in an AI agent: the turn loop, memory as tools, persona + memory, production notes |
 | [docs/HTTP_API.md](docs/HTTP_API.md) | Calling it from Python, TypeScript or anything else |
+| [docs/HOSTING.md](docs/HOSTING.md) | Using a persona from Go, hosted or local; the hosted service on AWS Lambda + EC2 + Neon |
 | [docs/REGISTRY.md](docs/REGISTRY.md) | The `.persona` file format, evaluation, and the Postgres/Neon registry |
 | [docs/DESIGN.md](docs/DESIGN.md) | The research behind the design, measurements, roadmap |
 | [docs/PUBLISHING.md](docs/PUBLISHING.md) | Import domain, CI, releasing a version |
@@ -41,6 +42,21 @@ docker build -t openpersona .
 ```
 
 Put `OPENAI_API_KEY` and `OPENROUTER_API_KEY` in `.env` (see `.env.example`); add `NEON_DB_URL` to use the registry.
+
+## Use a persona from Go: hosted or local
+
+```go
+import "go.vicoworks.com/openpersona"
+
+client := openpersona.NewClient(apiKey, openpersona.ClientOptions{BaseURL: "https://api.example.com"})
+kora := client.Persona("kora")                                   // runs on the hosted service
+// kora, _ := client.OpenLocal(ctx, "kora", "./packs", opts)     // or downloads the pack and runs in your process
+
+tool, _ := openpersona.NewKnowledgeTool(ctx, kora, openpersona.ToolOptions{}) // a tool for your agent's model
+reply, _ := openpersona.Ask(ctx, kora, "Budget Rp 20 juta, seminggu di Jepang, ikut festival musim panas")
+```
+
+Hosted personas also answer over HTTP and [MCP](docs/HTTP_API.md#post-mcp). See [docs/HOSTING.md](docs/HOSTING.md).
 
 ## Quick start
 
@@ -136,10 +152,14 @@ graph/     storage kernel: nodes, edges, BM25 index, vectors (SQLite, pure Go)
 recall/    parallel retrieval channels, rank fusion, LLM rerank
 memory/    read-write context engine
 persona/   trainer, read-only runtime, pack format, evaluation
-registry/  persona packs in Postgres (Neon): migrations, push, pull, versions
+(root)    the client library: Persona, hosted (Client) or local (Open), KnowledgeTool
+cloud/     API-key principals and scopes, async jobs, usage (shared by server, registry, Lambda)
+registry/  Postgres (Neon): packs and versions, API keys, jobs, usage, the on-demand catalog
 llm/       OpenAI-compatible client, JSON helper, usage meter
 server/    HTTP API
-cmd/openpersona/   CLI
+cmd/openpersona/          CLI and server (serve -cloud for the hosted EC2 tier)
+cmd/openpersona-lambda/   the hosted API on AWS Lambda (HTTP + async job worker)
+deploy/aws/               SAM template for Lambda; systemd and Caddy for EC2
 deploy/vanity/     Cloudflare Worker serving the go.vicoworks.com import path
 ```
 

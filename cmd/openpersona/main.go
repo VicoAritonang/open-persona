@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"go.vicoworks.com/openpersona/cloud"
 	"go.vicoworks.com/openpersona/graph"
 	"go.vicoworks.com/openpersona/llm"
 	"go.vicoworks.com/openpersona/memory"
@@ -45,6 +47,11 @@ Memory (read-write context):
 
 Server:
   openpersona serve -addr :8080 [-db mem.db] [-personas dir] [-registry fina,other@1.0.0]
+  openpersona serve -cloud [-personas /var/cache/openpersona]     hosted: keys, jobs, usage in Neon
+
+API keys for the hosted service (stored in the registry database):
+  openpersona keys create -owner "Acme" [-name prod] [-personas kora] [-scopes knowledge,chat,download]
+  openpersona keys list | revoke -id key_... | usage [-since 720h]
 
 Keys are read from .env (OPENAI_API_KEY, OPENROUTER_API_KEY, NEON_DB_URL).
 Models: OPENPERSONA_EXTRACT_MODEL (default ` + llm.DefaultExtractModel + `),
@@ -66,7 +73,7 @@ func main() {
 	commands := map[string]func(context.Context, []string) error{
 		"train": train, "inspect": inspect, "chat": chat,
 		"remember": remember, "recall": recallCmd, "serve": serve,
-		"eval": evalCmd, "push": push, "pull": pull, "registry": registryCmd,
+		"eval": evalCmd, "push": push, "pull": pull, "registry": registryCmd, "keys": keysCmd,
 	}
 	cmd, ok := commands[os.Args[1]]
 	if !ok {
@@ -111,15 +118,24 @@ func openPersona(path string) (*persona.Persona, error) {
 	if err != nil {
 		return nil, err
 	}
+	return p, configurePersona(p)
+}
+
+// configurePersona connects the embedding model a pack was trained with,
+// when it has vectors and embeddings are not turned off.
+func configurePersona(p *persona.Persona) error {
 	if p.EmbedModel != "" && os.Getenv("OPENPERSONA_EMBED_MODEL") != "off" {
 		if model, err := llm.New(p.EmbedModel); err == nil {
 			p.Embedder = model
 		} else {
-			log.Printf("note: %v; %s runs without semantic retrieval", err, filepath.Base(path))
+			log.Printf("note: %v; %s runs without semantic retrieval", err, p.Spec.ID)
 		}
 	}
-	return p, nil
+	return nil
 }
+
+// version is set at build time: -ldflags "-X main.version=v0.3.0".
+var version = "dev"
 
 // readSources loads one file, or every .md/.txt file under a directory.
 func readSources(path string) ([]persona.Source, error) {
@@ -147,7 +163,7 @@ func readSources(path string) ([]persona.Source, error) {
 	}
 	var out []persona.Source
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		data, err := readFile(f)
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +184,7 @@ func train(ctx context.Context, args []string) error {
 		return errors.New("train needs -spec, -src and -out")
 	}
 	var spec persona.Spec
-	data, err := os.ReadFile(*specPath)
+	data, err := readFile(*specPath)
 	if err != nil {
 		return err
 	}
@@ -212,7 +228,7 @@ func modelSpec(env, def string) string {
 }
 
 func readEvalSet(path string) ([]persona.EvalCase, error) {
-	data, err := os.ReadFile(path)
+	data, err := readFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -584,7 +600,7 @@ func remember(ctx context.Context, args []string) error {
 	scope := fs.String("scope", "default", "memory scope (user id)")
 	file := fs.String("file", "", `JSON file: [{"role":"user","content":"...","time":"2026-01-02T15:04:05Z"}, ...]`)
 	fs.Parse(args)
-	data, err := os.ReadFile(*file)
+	data, err := readFile(*file)
 	if err != nil {
 		return err
 	}
@@ -644,72 +660,81 @@ func recallCmd(ctx context.Context, args []string) error {
 func serve(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", ":8080", "listen address")
-	db := fs.String("db", "memory.db", "memory database")
-	dir := fs.String("personas", "", "directory of *.persona packs to serve")
+	db := fs.String("db", "memory.db", "memory database (\"\" disables memory)")
+	dir := fs.String("personas", "", "directory of *.persona packs to serve; with -cloud, the cache directory packs are pulled into")
 	fromRegistry := fs.String("registry", "", "comma-separated persona ids (id or id@version) to pull from the registry into -personas before serving")
+	cloudMode := fs.Bool("cloud", false, "hosted mode: API keys, async jobs and usage in the registry database, packs pulled on demand (latest published)")
 	fs.Parse(args)
+	dbSet := false
+	fs.Visit(func(f *flag.Flag) { dbSet = dbSet || f.Name == "db" })
 
-	if *fromRegistry != "" {
-		if *dir == "" {
-			return errors.New("-registry needs -personas: the directory packs are pulled into")
-		}
-		if err := os.MkdirAll(*dir, 0o755); err != nil {
-			return err
-		}
+	srv := &server.Server{Personas: make(map[string]*persona.Persona), Version: version}
+	srv.AllowOrigins = splitList(os.Getenv("OPENPERSONA_CORS_ORIGINS"))
+	if model, err := chatModel(); err == nil {
+		srv.Chat = model
+	} else {
+		log.Printf("note: %v; persona chat is disabled", err)
+	}
+
+	if *cloudMode {
 		reg, err := openRegistry(ctx)
 		if err != nil {
 			return err
 		}
-		for _, ref := range strings.Split(*fromRegistry, ",") {
-			id, version, _ := strings.Cut(strings.TrimSpace(ref), "@")
-			v, downloaded, err := reg.Pull(ctx, id, version, filepath.Join(*dir, id+persona.PackExt))
-			if err != nil {
-				reg.Close()
+		defer reg.Close()
+		if *dir == "" {
+			*dir = filepath.Join(os.TempDir(), "openpersona-packs")
+		}
+		srv.Auth, srv.Jobs, srv.Usage = reg, reg, reg
+		cat := &registry.Catalog{Registry: reg, Dir: *dir, Configure: configurePersona}
+		defer cat.Close()
+		srv.Catalog = cat
+		if key := os.Getenv("OPENPERSONA_API_KEY"); key != "" {
+			srv.Auth = cloud.AnyOf{cloud.StaticKey(key), reg} // an operator key next to the customer keys
+		}
+		log.Printf("cloud mode: keys, jobs and usage in the registry; packs cached in %s", *dir)
+	} else {
+		if *fromRegistry != "" {
+			if err := pullPacks(ctx, *fromRegistry, *dir); err != nil {
 				return err
 			}
-			log.Printf("registry: %s@%s (%s)", v.PersonaID, v.Version, map[bool]string{true: "downloaded", false: "cached"}[downloaded])
 		}
-		reg.Close()
+		srv.APIKey = os.Getenv("OPENPERSONA_API_KEY")
+		if srv.APIKey == "" {
+			log.Printf("warning: OPENPERSONA_API_KEY is not set; the API accepts unauthenticated requests")
+		}
+		srv.Jobs = &cloud.MemoryJobs{}
+		if *dir != "" {
+			packs, err := filepath.Glob(filepath.Join(*dir, "*.persona"))
+			if err != nil {
+				return err
+			}
+			for _, path := range packs {
+				p, err := openPersona(path)
+				if err != nil {
+					return err
+				}
+				defer p.Close()
+				srv.Personas[p.Spec.ID] = p
+				log.Printf("loaded persona %s@%s (%s)", p.Spec.ID, p.Spec.Version, p.Spec.Role)
+			}
+		}
 	}
-
-	srv := &server.Server{Personas: make(map[string]*persona.Persona), APIKey: os.Getenv("OPENPERSONA_API_KEY")}
-	if srv.APIKey == "" {
-		log.Printf("warning: OPENPERSONA_API_KEY is not set; the API accepts unauthenticated requests")
-	}
-	eng, store, _, err := openMemory(*db)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	defer eng.Close()
-	srv.Memory = eng
-
-	if *dir != "" {
-		packs, err := filepath.Glob(filepath.Join(*dir, "*.persona"))
+	if *db != "" && (!*cloudMode || dbSet) {
+		eng, store, _, err := openMemory(*db)
 		if err != nil {
 			return err
 		}
-		for _, path := range packs {
-			p, err := openPersona(path)
-			if err != nil {
-				return err
-			}
-			defer p.Close()
-			name := strings.TrimSuffix(filepath.Base(path), ".persona")
-			srv.Personas[name] = p
-			log.Printf("loaded persona %q (%s)", name, p.Spec.Role)
-		}
-	}
-	if model, err := chatModel(); err == nil {
-		srv.Chat = model
-	} else {
-		log.Printf("note: %v; persona chat endpoint is disabled", err)
+		defer store.Close()
+		defer eng.Close()
+		srv.Memory = eng
 	}
 
-	hs := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	// No WriteTimeout: streamed answers can run for minutes.
+	hs := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	go func() {
 		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		hs.Shutdown(shutdown)
 	}()
@@ -718,4 +743,92 @@ func serve(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+func pullPacks(ctx context.Context, refs, dir string) error {
+	if dir == "" {
+		return errors.New("-registry needs -personas: the directory packs are pulled into")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	reg, err := openRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+	for _, ref := range strings.Split(refs, ",") {
+		id, version, _ := strings.Cut(strings.TrimSpace(ref), "@")
+		v, downloaded, err := reg.Pull(ctx, id, version, filepath.Join(dir, id+persona.PackExt))
+		if err != nil {
+			return err
+		}
+		log.Printf("registry: %s@%s (%s)", v.PersonaID, v.Version, map[bool]string{true: "downloaded", false: "cached"}[downloaded])
+	}
+	return nil
+}
+
+func keysCmd(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: openpersona keys create|list|revoke")
+	}
+	fs := flag.NewFlagSet("keys "+args[0], flag.ExitOnError)
+	owner := fs.String("owner", "", "who the key is for")
+	name := fs.String("name", "", "label, e.g. \"production backend\"")
+	personas := fs.String("personas", "*", "comma-separated persona ids, or * for all")
+	scopes := fs.String("scopes", "knowledge,chat", "comma-separated: "+strings.Join(cloud.AllScopes, ","))
+	id := fs.String("id", "", "key id (revoke)")
+	since := fs.Duration("since", 30*24*time.Hour, "usage window (usage)")
+	fs.Parse(args[1:])
+	reg, err := openRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+	switch args[0] {
+	case "create":
+		key, k, err := reg.CreateKey(ctx, registry.KeySpec{Owner: *owner, Name: *name, Personas: splitList(*personas), Scopes: splitList(*scopes)})
+		if err != nil {
+			return err
+		}
+		printJSON(k)
+		fmt.Printf("\nAPI key (shown once, store it now):\n%s\n", key)
+	case "list":
+		keys, err := reg.ListKeys(ctx)
+		if err != nil {
+			return err
+		}
+		printJSON(keys)
+	case "revoke":
+		if err := reg.RevokeKey(ctx, *id); err != nil {
+			return err
+		}
+		fmt.Printf("revoked %s\n", *id)
+	case "usage":
+		rows, err := reg.UsageSince(ctx, time.Now().Add(-*since))
+		if err != nil {
+			return err
+		}
+		printJSON(rows)
+	default:
+		return fmt.Errorf("unknown keys command %q", args[0])
+	}
+	return nil
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, x := range strings.Split(s, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// readFile reads a file without the UTF-8 byte order mark that Windows
+// editors and PowerShell often write, which JSON decoding rejects.
+func readFile(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	return bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), err
 }

@@ -56,7 +56,7 @@ func TestRegistryRoundTrip(t *testing.T) {
 	defer reg.Close()
 	defer reg.DropSchema(ctx)
 
-	if applied, err := reg.Migrate(ctx); err != nil || len(applied) != 1 {
+	if applied, err := reg.Migrate(ctx); err != nil || len(applied) != 2 {
 		t.Fatalf("migrate: %v %v", applied, err)
 	}
 	if applied, err := reg.Migrate(ctx); err != nil || len(applied) != 0 {
