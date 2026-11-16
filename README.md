@@ -165,4 +165,8 @@ deploy/vanity/     Cloudflare Worker serving the go.vicoworks.com import path
 
 ## Status
 
-Early (v0.x: the API may still change). The engines, CLI and server work and are covered by offline tests (`go test ./...`). Not yet done: a benchmark run (LongMemEval / LoCoMo), an ANN vector index, scope deletion, and a license file. See the roadmap in [docs/DESIGN.md](docs/DESIGN.md).
+Early (v0.x: the API may still change). The engines, CLI and server work and are covered by offline tests (`go test ./...`). Not yet done: a benchmark run (LongMemEval / LoCoMo), an ANN vector index, and scope deletion. See the roadmap in [docs/DESIGN.md](docs/DESIGN.md).
+
+## License
+
+The code is licensed under the [Apache License 2.0](LICENSE). Persona packs (`.persona` files) and their training material are not covered by it: each pack is distributed under its own terms.

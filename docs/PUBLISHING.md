@@ -13,7 +13,7 @@ import openpersona "go.vicoworks.com/open-persona"
 ## One-time setup
 
 1. **Push the repository** and make it public. (For a private repository, importers need `GOPRIVATE=go.vicoworks.com` and git credentials, and pkg.go.dev will not show it.)
-2. **Add a `LICENSE` file.** pkg.go.dev only displays documentation for modules with a recognized open-source license.
+2. **License**: Apache-2.0 (`LICENSE`). pkg.go.dev only displays documentation for modules with a recognized open-source license, and reads it per version: a license added later shows from the next tag on.
 3. **Check the vanity host** answers for the module and its packages:
 
 ```sh
