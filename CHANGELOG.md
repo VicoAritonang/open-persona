@@ -14,6 +14,7 @@ The hosted platform in `platform/` has its own [changelog](platform/CHANGELOG.md
 - `server.Server` exposes its operations (`Knowledge`, `Chat`, `SubmitJob`, `Job`, `ListPersonas`, `Manifest`, `AddMessages`, `SearchMemory`, `Authenticate`) for other transports, and `Mount` for extra handlers.
 - `local` package: `local.Open` and `local.Fetch` run a pack in process.
 - `openpersona version`; binaries report their module version.
+- The Release workflow updates an existing release (assets and notes) when a tag is pushed again, instead of failing.
 - `NOTICE`, `CONTRIBUTING.md`, `SECURITY.md`, this changelog, a `Makefile`, Dependabot.
 
 ### Changed
