@@ -1,7 +1,11 @@
 .git
+.github
 .env
 .env.*
 bin/
 data/
+dist/
+packs/
+platform/
 *.db
 *.persona

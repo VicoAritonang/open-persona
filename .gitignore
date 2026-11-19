@@ -1,11 +1,23 @@
+# Secrets
 .env
 .env.*
 !.env.example
+
+# Data and build output
 *.db
 *.db-wal
 *.db-shm
 *.persona
 /bin/
+/dist/
 /data/
-/deploy/aws/lambda/build/
 /packs/
+/platform/deploy/aws/lambda/build/
+/platform/deploy/aws/ec2/openpersona-cloud
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

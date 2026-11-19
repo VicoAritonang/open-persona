@@ -1,38 +1,42 @@
 # OpenPersona
 
-> Go library and HTTP service for persona and context engineering: long-term memory for AI agents (read-write) and trained, read-only personas backed by a knowledge graph. Pure Go, SQLite storage, no external services.
+> Go library and server for persona and context engineering: long-term memory for AI agents (read-write) and trained, read-only personas backed by a knowledge graph. Pure Go, SQLite storage, no external services. Usable from any language over HTTP (OpenAPI) or gRPC.
 
-Module: `go.vicoworks.com/open-persona` (source: https://github.com/VicoAritonang/open-persona). Requires Go 1.26+.
+Module: `go.vicoworks.com/open-persona` (source: https://github.com/VicoAritonang/open-persona). Requires Go 1.26+. Pre-1.0: the Go API may change between minor versions (CHANGELOG.md); the wire API `/v1` / `openpersona.v1` is stable.
 
-## Packages
+## Packages (import only what you need)
 
-- `go.vicoworks.com/open-persona` (root): the client library. `openpersona.Persona` is one interface for a hosted or a local persona: `ID()`, `Info(ctx)`, `Knowledge(ctx, query, KnowledgeOptions{Units, Sources})` (no LLM), `Chat(ctx, []Message, ChatOptions{Context, MaxTokens})`, `Stream(ctx, msgs, opt, func(delta string) error)`, `Close()`. Hosted: `openpersona.NewClient(apiKey, ClientOptions{BaseURL, StreamURL, ChatMode})` then `client.Persona("kora")` (Chat is async by default: a job, polled); `client.Download(ctx, id, dir)` / `client.OpenLocal(ctx, id, dir, LocalOptions{Chat})` fetch the pack. Local: `openpersona.Open(path, LocalOptions{Chat, Embedder, NoEmbeddings})`. `openpersona.NewKnowledgeTool(ctx, p, ToolOptions{})` returns a tool with `Name`, `Description`, `Parameters`, `Call(ctx, args)`, `OpenAI()`, `Anthropic()`. `openpersona.Ask(ctx, p, question)`.
-- `go.vicoworks.com/open-persona/cloud`: `Principal` (key id, personas, scopes `knowledge`/`chat`/`download`), `Authenticator`, `StaticKey`, `AnyOf`, `JobStore`, `MemoryJobs`, `UsageRecorder`.
-
+- `go.vicoworks.com/open-persona` (root, standard library only): the client. `openpersona.Persona` is one interface for a persona on a server or in process: `ID()`, `Info(ctx)`, `Knowledge(ctx, query, KnowledgeOptions{Units, Sources})` (no LLM), `Chat(ctx, []Message, ChatOptions{Context, MaxTokens})`, `Stream(ctx, msgs, opt, func(delta string) error)`, `Close()`. Server: `openpersona.NewClient(apiKey, ClientOptions{BaseURL, StreamURL, ChatMode})` then `client.Persona("kora")` (Chat is async by default: a job, polled); `client.Download(ctx, id, dir)` fetches the pack. Errors: `*openpersona.APIError{Status, Code, Message}`. `openpersona.NewKnowledgeTool(ctx, p, ToolOptions{})` returns a tool with `Name`, `Description`, `Parameters`, `Call(ctx, args)`, `OpenAI()`, `Anthropic()`. `openpersona.Ask(ctx, p, question)`.
+- `go.vicoworks.com/open-persona/local`: `local.Open(path, local.Options{Chat, Embedder, NoEmbeddings})` and `local.Fetch(ctx, client, id, dir, opt)` return a `*local.Persona` implementing `openpersona.Persona`; `Pack()` is the engine.
+- `go.vicoworks.com/open-persona/persona`: `persona.Trainer{LLM, Embedder, EmbedModel}.Train(ctx, persona.Spec, []persona.Source, outPath)` writes a frozen pack. `persona.Open(path)` returns a read-only `*Persona` with `Retrieve(ctx, query, persona.RetrieveOptions{})`, `SystemPrompt(*Knowledge) string`, `Chat(ctx, llm.Client, []llm.Message, persona.ChatOptions{Context})`, `Evaluate`, `Manifest`, `Units`.
 - `go.vicoworks.com/open-persona/memory`: `memory.New(memory.Config{Store, Extractor, Embedder, Reranker})` returns an `*Engine`. `Add(ctx, scope, []memory.Message)` stores messages; `Search(ctx, scope, query, memory.SearchOptions{})` returns `*Result` with `Facts`, `Episodes` and `Context(maxTokens) string`; `Flush(ctx)` waits for background extraction; `Close()` on shutdown.
-- `go.vicoworks.com/open-persona/persona`: `persona.Trainer{LLM, Embedder, EmbedModel}.Train(ctx, persona.Spec, []persona.Source, outPath)` writes a frozen pack. `persona.Open(path)` returns a read-only `*Persona` with `Retrieve(ctx, query, persona.RetrieveOptions{})`, `SystemPrompt(*Knowledge) string` and `Chat(ctx, llm.Client, []llm.Message, persona.ChatOptions{Context})`.
 - `go.vicoworks.com/open-persona/graph`: `graph.Open(path, graph.Options{ReadOnly, Analyzer})` returns the `*Store` both engines use.
 - `go.vicoworks.com/open-persona/llm`: `llm.New("provider:model")` returns a client that implements both `llm.Client` and `llm.Embedder`. Providers: `openai`, `openrouter`. `llm.LoadDotEnv()` loads `.env`.
 - `go.vicoworks.com/open-persona/recall`: `recall.Channel`, `recall.Fuse`, `recall.Rerank` for custom retrieval.
-- `go.vicoworks.com/open-persona/server`: `server.Server{Memory, Personas | Catalog, Chat, APIKey | Auth, Jobs, Dispatch, Usage, AllowOrigins}.Handler()` returns an `http.Handler` with the REST API, SSE streaming and MCP (`POST /mcp`); `RunJob(ctx, id)` runs an async job. `registry.Catalog{Registry, Dir}` serves packs on demand from Neon; `*registry.Registry` implements `cloud.Authenticator`, `JobStore` and `UsageRecorder`.
+- `go.vicoworks.com/open-persona/server`: `server.Server{Memory, Personas | Catalog, ChatModel, APIKey | Auth, Jobs, Dispatch, Usage, AllowOrigins, Mount}.Handler()` returns an `http.Handler` with the HTTP API, SSE streaming and MCP (`POST /mcp`). Operations shared by every transport: `Knowledge`, `Chat`, `SubmitJob`, `Job`, `ListPersonas`, `Manifest`, `AddMessages`, `SearchMemory`; they return `*server.Error{Code}`. Extension points: `Catalog`, `Authenticator` (`StaticKey`, `AnyOf`, `OpenAccess`), `JobStore` (`MemoryJobs`), `UsageRecorder`; `RunJob(ctx, id)` runs an async job.
+- `go.vicoworks.com/open-persona/server/rpc`: `rpc.Mount(srv, rpc.Options{Reflection})` adds the gRPC services `openpersona.v1.PersonaService` and `openpersona.v1.MemoryService` (gRPC, gRPC-Web, Connect) and `grpc.health.v1` to `srv.Handler()`.
+- `go.vicoworks.com/open-persona/api`: the contract. `api/openapi.yaml` (HTTP, embedded as `api.OpenAPI`), `api/proto/openpersona/v1/*.proto` (gRPC), generated Go in `api/gen/openpersona/v1` and `.../openpersonav1connect`.
 
 ## Rules for correct use
 
 - Scope is the isolation boundary. Derive it from the authenticated session, never from model output.
 - `Add` returns before facts are extracted. Call `Flush` only in tests and batch jobs.
 - One `Engine` per database file, shared by all goroutines. Close the engine before the store.
-- A persona pack is immutable. To change a persona, retrain and replace the file. Set `p.Embedder` to a client for `p.EmbedModel` when it is non-empty.
-- A pack is versioned by `Spec.ID` and `Spec.Version` (semver). In the registry (`go.vicoworks.com/open-persona/registry`, Postgres/Neon) id@version is immutable: bump the version when retraining. `registry.Open(ctx, registry.URLFromEnv(), registry.Options{})`, then `Migrate`, `Push(ctx, path, PushOptions{})`, `Pull(ctx, id, version, outPath)` ("" = latest published). See docs/REGISTRY.md.
-- `Spec.Retrieve` (`{"units": 20, "sources": 3}` in spec.json) sets a pack's default retrieval budget; `RetrieveOptions` still override it. Multi-sentence queries also retrieve per sentence. For agents, expose `POST /v1/personas/{name}/prompt` with `{"query", "units", "sources"}` as a knowledge tool called once per sub-question (see examples/travel/README.md).
+- A persona pack is immutable. To change a persona, retrain with a new `Spec.Version` (semver); `id@version` never changes bytes. Set `p.Embedder` to a client for `p.EmbedModel` when it is non-empty (`local.Open` does it).
+- `Spec.Retrieve` (`{"units": 20, "sources": 3}` in spec.json) sets a pack's default retrieval budget; `RetrieveOptions` still override it. Multi-sentence queries also retrieve per sentence. For agents, expose knowledge (`POST /v1/personas/{id}/knowledge`, `PersonaService.GetKnowledge`, or `NewKnowledgeTool`) as a tool called once per sub-question.
 - `Persona.Evaluate(ctx, []persona.EvalCase{{Q, Expect}}, persona.EvalOptions{})` scores whether expected facts reach the prompt, with no chat call; `Trainer.Eval` does it at training time and stores the result in the pack.
 - Pass conversations to `Persona.Chat` without a system message; the persona supplies it. Put extra context (such as `Result.Context`) in `ChatOptions.Context`.
 - `Result.Context` returns "" when nothing was found; do not add an empty memory block to prompts.
+- Branch on error codes (`APIError.Code`, gRPC status codes), not messages.
 - Tests should use a fake `llm.Client` (a func type with a `Complete` method); see `memory/memory_test.go`.
 
 ## Docs
 
-- [Integration guide](docs/INTEGRATION.md): the agent turn loop, memory as tools, persona + memory, production notes
-- [HTTP API](docs/HTTP_API.md): endpoints for non-Go projects
-- [Hosting](docs/HOSTING.md): the client library hosted or local; Lambda + EC2 + Neon deployment
+- [Integration guide](docs/INTEGRATION.md): the agent turn loop, memory as tools, persona + memory
+- [Go client](docs/CLIENT.md): a persona on a server or in process
+- [HTTP API](docs/HTTP_API.md) and [api/openapi.yaml](api/openapi.yaml)
+- [gRPC](docs/GRPC.md): clients for other languages
+- [API contract and compatibility](api/README.md)
+- [Packs](docs/PACKS.md): the `.persona` format and evaluation
 - [Design](docs/DESIGN.md): research, decisions, measurements, roadmap
-- [Publishing](docs/PUBLISHING.md): vanity import domain, CI, releases
+- [Releasing](docs/RELEASING.md): versioning, CI, releases

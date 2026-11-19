@@ -31,21 +31,21 @@ Prices are planning estimates as of November 2026. Fast-changing facts are marke
 
 Kora's product has its own actuators: `get_flights`, `get_hotels` and `google_search`. Train, bus, ferry and attraction tickets cannot be bought, so Kora's knowledge supplies the routes, fares and how to buy them. The pack does not call these tools. The agent does.
 
-With the Go library (hosted or local, same code; see [docs/HOSTING.md](../../docs/HOSTING.md)):
+With the Go library (hosted or local, same code; see [docs/CLIENT.md](../../docs/CLIENT.md)):
 
 ```go
 client := openpersona.NewClient(os.Getenv("OPENPERSONA_API_KEY"), openpersona.ClientOptions{BaseURL: "https://api.example.com"})
-kora := client.Persona("kora")
+kora := client.Persona("kora") // or: kora, _ := local.Open("packs/kora.persona", local.Options{})
 tool, _ := openpersona.NewKnowledgeTool(ctx, kora, openpersona.ToolOptions{})   // "kora_knowledge"
 k, _ := kora.Knowledge(ctx, userRequest, openpersona.KnowledgeOptions{})         // k.System: the agent's system prompt
 // model tools: tool.OpenAI(), get_flights, get_hotels, google_search; route "kora_knowledge" calls to tool.Call
 ```
 
-An MCP client gets the same through `POST /mcp` (`kora_knowledge`, `kora_ask`).
+An MCP client gets the same through `POST /mcp` (`kora_knowledge`, `kora_ask`), and any language through gRPC (`PersonaService.GetKnowledge`; see [docs/GRPC.md](../../docs/GRPC.md)).
 
 The loop, in HTTP terms:
 
-1. **System prompt.** Call `POST /v1/personas/kora/prompt` with the user's request and use the returned `system` as the agent's system prompt. It carries Kora's identity, boundaries and the knowledge for the request as a whole.
+1. **System prompt.** Call `POST /v1/personas/kora/knowledge` with the user's request and use the returned `system` as the agent's system prompt. It carries Kora's identity, boundaries and the knowledge for the request as a whole.
 2. **Knowledge as a tool.** Give the agent a `kora_knowledge(query)` tool that calls the same endpoint with a small budget (`{"query": "...", "units": 6, "sources": -1}`) and returns `units`. A trip request has many facets (visa for this passport, this airport transfer, this festival, this city). One retrieval for the whole request has a ceiling. In a live test, a Stockholm-to-Kariya business request missed the Swedish visa rule and the Stockholm–Japan corridor even though both are in the pack. Retrieving once per facet does not have that ceiling.
 3. **Live data.** The agent calls `get_flights` and `get_hotels` for prices and availability, and `google_search` only for what the knowledge marks for verification or does not have (see `90-riset-dengan-google.md`).
 
@@ -65,4 +65,4 @@ Without tools, `POST /v1/personas/kora/chat` still works in one shot. Retrieval 
 
 ## Updating Kora
 
-The knowledge goes out of date, so plan to refresh it: when fares, visa rules or opening hours change, edit `sources/`, bump `version` in `spec.json`, retrain and push. A version in the registry is immutable. Before retraining, check the facts marked "(verifikasi)" again, and the festival dates for the coming year.
+The knowledge goes out of date, so plan to refresh it: when fares, visa rules or opening hours change, edit `sources/`, bump `version` in `spec.json`, and retrain. A published version is immutable: never ship different bytes under the same version. Before retraining, check the facts marked "(verifikasi)" again, and the festival dates for the coming year.
