@@ -17,8 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"go.vicoworks.com/open-persona/persona"
 )
 
 // ChatMode chooses how a hosted persona's Chat reaches the service.
@@ -84,11 +82,19 @@ func NewClient(apiKey string, opt ClientOptions) *Client {
 
 // APIError is an error answer from the service.
 type APIError struct {
-	Status  int
+	Status int
+	// Code classifies the error: "invalid_argument", "unauthenticated",
+	// "permission_denied", "not_found", "unavailable", "unimplemented",
+	// "upstream" or "internal" (see api/openapi.yaml). Empty when the
+	// answer did not come from an OpenPersona server (a proxy, say).
+	Code    string
 	Message string
 }
 
 func (e *APIError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("openpersona: HTTP %d %s: %s", e.Status, e.Code, e.Message)
+	}
 	return fmt.Sprintf("openpersona: HTTP %d: %s", e.Status, e.Message)
 }
 
@@ -145,11 +151,12 @@ func checkStatus(resp *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	var e struct {
 		Error string `json:"error"`
+		Code  string `json:"code"`
 	}
 	if json.Unmarshal(data, &e) != nil || e.Error == "" {
 		e.Error = strings.TrimSpace(string(data))
 	}
-	return &APIError{Status: resp.StatusCode, Message: e.Error}
+	return &APIError{Status: resp.StatusCode, Code: e.Code, Message: e.Error}
 }
 
 // List returns the personas this API key may use.
@@ -277,9 +284,10 @@ func readEvents(body io.Reader, onDelta func(string) error) (*Reply, error) {
 			case "error":
 				var e struct {
 					Error string `json:"error"`
+					Code  string `json:"code"`
 				}
 				json.Unmarshal([]byte(payload), &e)
-				return nil, &APIError{Status: http.StatusBadGateway, Message: e.Error}
+				return nil, &APIError{Status: http.StatusBadGateway, Code: e.Code, Message: e.Error}
 			}
 			event = ""
 		}
@@ -349,14 +357,19 @@ func (c *Client) Wait(ctx context.Context, id string) (*Reply, error) {
 	}
 }
 
-// downloadChunk keeps each response under AWS Lambda's 6 MB payload limit
-// after base64 encoding.
-var downloadChunk int64 = 3 << 20
+// DownloadChunk is the size of one ranged request of Download. 3 MiB keeps
+// each response under AWS Lambda's 6 MB payload limit after base64
+// encoding.
+var DownloadChunk int64 = 3 << 20
+
+// PackExt is the file extension of a persona pack.
+const PackExt = ".persona"
 
 // Download fetches the current version of a persona's pack into dir and
 // returns its path (dir/<id>@<version>.persona). The API key needs the
 // download scope. A file already there with the right SHA-256 is not
-// downloaded again. The pack is verified and opened before it is kept.
+// downloaded again. The pack's hash and file header are verified before it
+// is kept; open it with package local.
 func (c *Client) Download(ctx context.Context, id, dir string) (string, error) {
 	first, size, sum, version, err := c.packRange(ctx, id, 0)
 	if err != nil {
@@ -365,7 +378,7 @@ func (c *Client) Download(ctx context.Context, id, dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, id+"@"+version+persona.PackExt)
+	path := filepath.Join(dir, id+"@"+version+PackExt)
 	if have, err := fileSHA(path); err == nil && have == sum {
 		return path, nil
 	}
@@ -396,9 +409,7 @@ func (c *Client) Download(ctx context.Context, id, dir string) (string, error) {
 		err = fmt.Errorf("openpersona: %s: downloaded bytes do not match sha256 %s", id, sum)
 	}
 	if err == nil {
-		var p *persona.Persona
-		if p, err = persona.Open(tmp); err == nil {
-			p.Close()
+		if err = checkPackHeader(tmp); err == nil {
 			err = os.Rename(tmp, path)
 		}
 	}
@@ -409,21 +420,12 @@ func (c *Client) Download(ctx context.Context, id, dir string) (string, error) {
 	return path, nil
 }
 
-// OpenLocal downloads a persona (if needed) and opens it to run locally.
-func (c *Client) OpenLocal(ctx context.Context, id, dir string, opt LocalOptions) (*Local, error) {
-	path, err := c.Download(ctx, id, dir)
-	if err != nil {
-		return nil, err
-	}
-	return Open(path, opt)
-}
-
 func (c *Client) packRange(ctx context.Context, id string, off int64) (data []byte, size int64, sum, version string, err error) {
 	req, err := c.newRequest(ctx, http.MethodGet, c.opt.BaseURL, "/v1/personas/"+url.PathEscape(id)+"/pack", nil)
 	if err != nil {
 		return nil, 0, "", "", err
 	}
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+downloadChunk-1))
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+DownloadChunk-1))
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, 0, "", "", err
@@ -442,7 +444,7 @@ func (c *Client) packRange(ctx context.Context, id string, off int64) (data []by
 			size, _ = strconv.ParseInt(cr[i+1:], 10, 64)
 		}
 	}
-	data, err = io.ReadAll(io.LimitReader(resp.Body, downloadChunk+1))
+	data, err = io.ReadAll(io.LimitReader(resp.Body, DownloadChunk+1))
 	if err == nil && len(data) == 0 && size > 0 {
 		err = errors.New("openpersona: empty pack chunk")
 	}
@@ -460,4 +462,33 @@ func fileSHA(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// A pack is an SQLite database whose header carries the pack application
+// id (offset 68) and format version (offset 60), both big-endian.
+const (
+	packApplicationID = 0x4F504E50 // "OPNP"
+	packFormat        = 1          // the newest format this library reads
+)
+
+// checkPackHeader verifies that path is a persona pack this library can
+// read, without opening it as a database.
+func checkPackHeader(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var h [100]byte
+	if _, err := io.ReadFull(f, h[:]); err != nil || string(h[:15]) != "SQLite format 3" || h[15] != 0 {
+		return fmt.Errorf("openpersona: %s is not a persona pack", filepath.Base(path))
+	}
+	be := func(b []byte) uint32 { return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3]) }
+	if app := be(h[68:72]); app != packApplicationID && app != 0 {
+		return fmt.Errorf("openpersona: %s is not a persona pack (application id %#x)", filepath.Base(path), app)
+	}
+	if format := be(h[60:64]); format > packFormat {
+		return fmt.Errorf("openpersona: %s has pack format %d; this library reads up to %d, upgrade it", filepath.Base(path), format, packFormat)
+	}
+	return nil
 }

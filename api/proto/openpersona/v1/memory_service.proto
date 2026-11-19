@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package openpersona.v1;
+
+import "google/protobuf/timestamp.proto";
+import "openpersona/v1/types.proto";
+
+// MemoryService is long-term memory for users and conversations: store
+// messages, retrieve facts. A scope (usually a user id) is the isolation
+// boundary; derive it from your own authenticated session, never from
+// model output.
+service MemoryService {
+  // AddMessages stores messages. Facts are extracted in the background, so
+  // they become searchable shortly after the call returns.
+  rpc AddMessages(AddMessagesRequest) returns (AddMessagesResponse);
+  // SearchMemory retrieves the facts and raw messages most relevant to a
+  // query, and a prompt-ready context block. No model call unless rerank
+  // is set.
+  rpc SearchMemory(SearchMemoryRequest) returns (SearchMemoryResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// MemoryMessage is one conversation turn to remember.
+message MemoryMessage {
+  // "user", "assistant", or any speaker label.
+  string role = 1;
+  // Speaker name, if known.
+  string name = 2;
+  string content = 3;
+  // When it was said (default: now).
+  google.protobuf.Timestamp time = 4;
+}
+
+message AddMessagesRequest {
+  string scope = 1;
+  repeated MemoryMessage messages = 2;
+}
+
+message AddMessagesResponse {
+  int32 stored = 1;
+}
+
+message SearchMemoryRequest {
+  string scope = 1;
+  string query = 2;
+  // Facts to return (0: 10).
+  int32 facts = 3;
+  // Raw messages to return (0: 5).
+  int32 episodes = 4;
+  // Also return facts that are no longer true.
+  bool include_history = 5;
+  // Rerank with the server's model (one model call).
+  bool rerank = 6;
+  // Token budget of context (0: no limit).
+  int32 max_tokens = 7;
+}
+
+message SearchMemoryResponse {
+  repeated Item facts = 1;
+  repeated Item episodes = 2;
+  // Prompt-ready block; empty when nothing was found.
+  string context = 3;
+}
