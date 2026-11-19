@@ -8,12 +8,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +26,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Format
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -30,7 +34,7 @@ jobs:
           fi
 
       - name: Module is tidy
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: go mod tidy -diff
 
       - name: Vet
@@ -38,14 +42,56 @@ jobs:
 
       # Tests use a fake LLM: no API keys, no network, no cost.
       - name: Test
-        if: matrix.os != 'ubuntu-latest'
+        if: runner.os != 'Linux'
         run: go test ./...
 
       - name: Test (race detector)
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: go test -race ./...
 
       # The library promises a cgo-free build; keep it that way.
       - name: Build without cgo
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: CGO_ENABLED=0 go build ./...
+
+      # The client package must stay free of the storage engine and gRPC.
+      - name: Client package dependencies
+        if: runner.os == 'Linux'
+        run: |
+          if go list -deps . | grep -E 'modernc.org/sqlite|google.golang.org/protobuf|connectrpc.com'; then
+            echo "the root package must depend on the standard library and llm only"; exit 1
+          fi
+
+  contract:
+    runs-on: ubuntu-latest
+    env:
+      BUF: go run github.com/bufbuild/buf/cmd/buf@v1.75.0 # the version the Makefile pins
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Protobuf lint
+        run: $BUF lint
+
+      # Skipped while the base branch has no contract yet (the first PR adding it).
+      - name: No breaking change against the base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          if git cat-file -e "origin/${{ github.base_ref }}:api/proto" 2>/dev/null; then
+            $BUF breaking --against "${{ github.server_url }}/${{ github.repository }}.git#branch=${{ github.base_ref }}"
+          else
+            echo "origin/${{ github.base_ref }} has no api/proto yet; nothing to compare"
+          fi
+
+      - name: Generated code is up to date
+        run: |
+          $BUF generate
+          git diff --exit-code -- api/gen
+
+      # Routes and error codes match api/openapi.yaml (also part of go test).
+      - name: OpenAPI matches the server
+        run: go test ./server -run 'OpenAPI'

@@ -1,0 +1,200 @@
+syntax = "proto3";
+
+package openpersona.v1;
+
+import "google/protobuf/timestamp.proto";
+import "openpersona/v1/types.proto";
+
+// PersonaService serves trained personas: their knowledge (no model call)
+// and answers in their voice.
+//
+// Authentication: "authorization: Bearer <api key>" metadata. Errors use
+// standard gRPC codes: INVALID_ARGUMENT, UNAUTHENTICATED, PERMISSION_DENIED
+// (the key lacks a scope), NOT_FOUND (no such persona, or the key cannot
+// see it), UNAVAILABLE (not configured, or retry later), UNIMPLEMENTED.
+service PersonaService {
+  // ListPersonas lists the personas the API key may use.
+  rpc ListPersonas(ListPersonasRequest) returns (ListPersonasResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetPersona describes one persona: spec, identity core, training report.
+  rpc GetPersona(GetPersonaRequest) returns (GetPersonaResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetKnowledge retrieves what a persona knows about one query, and the
+  // system prompt for answering it with your own model. No model call.
+  // Scope: knowledge.
+  rpc GetKnowledge(GetKnowledgeRequest) returns (GetKnowledgeResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Chat answers the conversation's last user message as the persona.
+  // Scope: chat.
+  rpc Chat(ChatRequest) returns (ChatResponse);
+  // ChatStream is Chat with the answer delivered as it is generated: zero
+  // or more deltas, then the complete answer. Needs a deployment that
+  // streams (HTTP/2, no buffering proxy). Scope: chat.
+  rpc ChatStream(ChatStreamRequest) returns (stream ChatStreamResponse);
+  // SubmitChatJob starts an answer asynchronously; poll it with GetJob.
+  // Suits long answers and serverless deployments. Scope: chat.
+  rpc SubmitChatJob(SubmitChatJobRequest) returns (SubmitChatJobResponse);
+  // GetJob returns an async job of this API key and, when done, its answer.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+message ListPersonasRequest {}
+
+message ListPersonasResponse {
+  repeated Persona personas = 1;
+}
+
+message GetPersonaRequest {
+  string persona_id = 1;
+}
+
+message GetPersonaResponse {
+  Persona persona = 1;
+  // Pack format version (0 = written before the format was stamped).
+  int32 format = 2;
+  // The identity block present in every prompt.
+  string core = 3;
+  google.protobuf.Timestamp trained_at = 4;
+  // "provider:model" of the extraction model used in training.
+  string train_model = 5;
+  // "provider:model" of the embedding model; empty when the pack has no vectors.
+  string embed_model = 6;
+  TrainingReport report = 7;
+  EvalSummary eval = 8;
+}
+
+// TrainingReport summarizes a training run.
+message TrainingReport {
+  int32 sources = 1;
+  int32 chunks = 2;
+  int32 units = 3;
+  int32 entities = 4;
+  map<string, int32> by_kind = 5;
+}
+
+// EvalSummary is the held-out evaluation stored in a pack.
+message EvalSummary {
+  int32 cases = 1;
+  // Questions whose every expected fact was retrieved.
+  int32 passed = 2;
+  // Share of all expected facts that were retrieved (0-1).
+  double coverage = 3;
+  int32 answer_passed = 4;
+  double answer_coverage = 5;
+}
+
+message GetKnowledgeRequest {
+  string persona_id = 1;
+  // One focused question, in the user's language.
+  string query = 2;
+  // Knowledge units to return, 0-64 (0: the persona's default budget).
+  int32 units = 3;
+  // Verbatim source excerpts, -1 to 16 (0: the default; -1: none).
+  int32 sources = 4;
+}
+
+message GetKnowledgeResponse {
+  string persona_id = 1;
+  string version = 2;
+  // The persona's full system prompt for this query: identity, boundaries,
+  // this knowledge and grounding rules.
+  string system = 3;
+  // The knowledge alone, as text: the right shape for a tool result.
+  string context = 4;
+  repeated Item units = 5;
+  repeated Item sources = 6;
+}
+
+message ChatRequest {
+  string persona_id = 1;
+  // The conversation so far; the last message must be from the user.
+  repeated Message messages = 2;
+  // Extra material for the system prompt: what your app knows about the
+  // user or the task.
+  string context = 3;
+  int32 max_tokens = 4;
+  // Adds what this server's memory holds about the user (self-hosted).
+  string memory_scope = 5;
+  // With memory_scope, stores the exchange afterwards.
+  bool remember = 6;
+}
+
+message ChatResponse {
+  Answer answer = 1;
+}
+
+// Answer is a persona's finished answer.
+message Answer {
+  string persona_id = 1;
+  string version = 2;
+  string reply = 3;
+  // The knowledge the answer was grounded in.
+  repeated Item units = 4;
+  Usage usage = 5;
+}
+
+message ChatStreamRequest {
+  string persona_id = 1;
+  repeated Message messages = 2;
+  string context = 3;
+  int32 max_tokens = 4;
+  string memory_scope = 5;
+  bool remember = 6;
+}
+
+message ChatStreamResponse {
+  oneof event {
+    // The next piece of the answer.
+    string delta = 1;
+    // The complete answer; the last message of the stream.
+    Answer answer = 2;
+  }
+}
+
+message SubmitChatJobRequest {
+  string persona_id = 1;
+  repeated Message messages = 2;
+  string context = 3;
+  int32 max_tokens = 4;
+}
+
+message SubmitChatJobResponse {
+  Job job = 1;
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+// JobStatus is the state of an async job.
+enum JobStatus {
+  JOB_STATUS_UNSPECIFIED = 0;
+  JOB_STATUS_QUEUED = 1;
+  JOB_STATUS_RUNNING = 2;
+  JOB_STATUS_SUCCEEDED = 3;
+  JOB_STATUS_FAILED = 4;
+}
+
+// Job is an async answer.
+message Job {
+  string id = 1;
+  string persona_id = 2;
+  JobStatus status = 3;
+  // Set when status is FAILED.
+  string error = 4;
+  // Set when status is SUCCEEDED.
+  Answer answer = 5;
+  int32 attempts = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp finished_at = 9;
+}

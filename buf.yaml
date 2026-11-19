@@ -1,0 +1,12 @@
+# Protobuf contract of the gRPC API. CI runs `buf lint` and
+# `buf breaking --against` the main branch: a change that breaks existing
+# clients fails the build. See api/README.md.
+version: v2
+modules:
+  - path: api/proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

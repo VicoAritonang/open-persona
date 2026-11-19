@@ -3,7 +3,7 @@
 Two ways in:
 
 - **Go library**: `go get go.vicoworks.com/open-persona`. Everything runs inside your process.
-- **HTTP service**: run `openpersona serve` (or the Docker image) and call it from any language. Reference: [HTTP_API.md](HTTP_API.md).
+- **Server**: run `openpersona serve` (or the Docker image) and call it from any language over HTTP ([HTTP_API.md](HTTP_API.md)) or gRPC ([GRPC.md](GRPC.md)).
 
 Both expose the same two engines. **Memory** answers "what do we know about this user?" **Persona** answers "who is the agent, and what does it know about this topic?"
 

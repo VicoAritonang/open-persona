@@ -1,0 +1,45 @@
+name: Platform
+
+# The hosted platform (platform/) is its own module, built against the
+# library in this repository. When it moves to its own repository, move
+# this workflow with it and drop the platform/ prefixes.
+
+on:
+  push:
+    branches: [main]
+    paths: ["platform/**", "**.go", "go.mod", "go.sum", ".github/workflows/platform.yml"]
+  pull_request:
+    paths: ["platform/**", "**.go", "go.mod", "go.sum", ".github/workflows/platform.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: platform/go.mod
+          cache-dependency-path: platform/go.sum
+
+      - name: Format
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: Module is tidy
+        run: go mod tidy -diff
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build the Lambda bootstrap and the EC2 server
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -trimpath -o /tmp/bootstrap ./cmd/openpersona-lambda
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/openpersona-cloud ./cmd/openpersona-cloud

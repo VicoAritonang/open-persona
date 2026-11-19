@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.vicoworks.com/open-persona/cloud"
 	"go.vicoworks.com/open-persona/llm"
 	"go.vicoworks.com/open-persona/persona"
 )
@@ -47,8 +46,8 @@ func testPersona(t *testing.T) *persona.Persona {
 
 func TestMCP(t *testing.T) {
 	p := testPersona(t)
-	srv := &Server{Personas: map[string]*persona.Persona{"kora": p}, Chat: fakeLLM(func(llm.Request) string { return "Take the Haramain train." }),
-		Auth: cloud.AnyOf{cloud.StaticKey("op"), keyFor("ro", []string{cloud.ScopeKnowledge})}}
+	srv := &Server{Personas: map[string]*persona.Persona{"kora": p}, ChatModel: fakeLLM(func(llm.Request) string { return "Take the Haramain train." }),
+		Auth: AnyOf{StaticKey("op"), keyFor("ro", []string{ScopeKnowledge})}}
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -108,18 +107,18 @@ func TestMCP(t *testing.T) {
 	}
 }
 
-func keyFor(token string, scopes []string) cloud.Authenticator {
-	return authFunc(func(tok string) (*cloud.Principal, error) {
+func keyFor(token string, scopes []string) Authenticator {
+	return authFunc(func(tok string) (*Principal, error) {
 		if tok != token {
-			return nil, cloud.ErrUnauthorized
+			return nil, ErrUnauthorized
 		}
-		return &cloud.Principal{KeyID: token, Personas: []string{"*"}, Scopes: scopes}, nil
+		return &Principal{KeyID: token, Personas: []string{"*"}, Scopes: scopes}, nil
 	})
 }
 
-type authFunc func(string) (*cloud.Principal, error)
+type authFunc func(string) (*Principal, error)
 
-func (f authFunc) Authenticate(_ context.Context, token string) (*cloud.Principal, error) {
+func (f authFunc) Authenticate(_ context.Context, token string) (*Principal, error) {
 	return f(token)
 }
 

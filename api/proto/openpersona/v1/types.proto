@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package openpersona.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Persona describes a persona: the spec it was trained from.
+message Persona {
+  // Stable identifier: lowercase letters, digits and hyphens.
+  string id = 1;
+  // Semantic version of this build, such as "1.0.0".
+  string version = 2;
+  string name = 3;
+  // For example "Senior finance controller".
+  string role = 4;
+  string description = 5;
+  // The areas the persona covers; questions outside them are out of scope.
+  repeated string expertise = 6;
+  string tone = 7;
+  // Answer language; empty follows the user.
+  string language = 8;
+  // Things the persona must never do.
+  repeated string boundaries = 9;
+  // Who trained it.
+  string author = 10;
+  // The persona's default retrieval budget, if it sets one.
+  RetrieveDefaults retrieve = 11;
+}
+
+// RetrieveDefaults is a persona's default retrieval budget.
+message RetrieveDefaults {
+  int32 units = 1;
+  int32 sources = 2;
+}
+
+// Item is one retrieved piece of knowledge or memory.
+message Item {
+  int64 id = 1;
+  // Persona knowledge: principle, rule, procedure, concept, reference,
+  // example, source. Memory: fact, episode.
+  string kind = 2;
+  string title = 3;
+  string text = 4;
+  // When a memory fact became true, if known.
+  google.protobuf.Timestamp valid_at = 5;
+  // When a memory fact stopped being true; unset while it holds.
+  google.protobuf.Timestamp invalid_at = 6;
+  // Fused retrieval score; higher is more relevant. Only the order is
+  // meaningful.
+  double score = 7;
+  // The retrieval channels that found the item.
+  repeated string channels = 8;
+}
+
+// Role is the speaker of a chat message.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_USER = 1;
+  ROLE_ASSISTANT = 2;
+}
+
+// Message is one chat turn. The persona supplies the system prompt.
+message Message {
+  Role role = 1;
+  string content = 2;
+}
+
+// Usage counts chat-model tokens.
+message Usage {
+  int64 prompt_tokens = 1;
+  int64 completion_tokens = 2;
+  int64 calls = 3;
+}

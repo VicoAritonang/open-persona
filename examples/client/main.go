@@ -3,7 +3,7 @@
 //
 //	go run ./examples/client -url https://api.example.com -key opk_... -q "Kereta Nagoya ke Kariya?"
 //	go run ./examples/client ... -mode chat      # async job, then the answer
-//	go run ./examples/client ... -mode stream    # streamed answer (point -stream-url at the EC2 host)
+//	go run ./examples/client ... -mode stream    # streamed answer (point -stream-url at a host that streams)
 //	go run ./examples/client ... -mode local     # download the pack, answer locally with your own model key
 package main
 
@@ -17,6 +17,7 @@ import (
 
 	openpersona "go.vicoworks.com/open-persona"
 	"go.vicoworks.com/open-persona/llm"
+	"go.vicoworks.com/open-persona/local"
 )
 
 func main() {
@@ -38,12 +39,12 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		local, err := client.OpenLocal(ctx, *id, "packs", openpersona.LocalOptions{Chat: chat})
+		lp, err := local.Fetch(ctx, client, *id, "packs", local.Options{Chat: chat})
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer local.Close()
-		p = local
+		defer lp.Close()
+		p = lp
 	}
 
 	start := time.Now()

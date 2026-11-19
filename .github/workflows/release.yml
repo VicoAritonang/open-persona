@@ -1,8 +1,10 @@
 name: Release
 
-# Push a tag like v0.1.0 to publish a version. Go modules are published by
-# the tag itself; this workflow tests it, attaches CLI binaries to a GitHub
-# release, and asks the Go module proxy to index the version.
+# Push a tag like v0.2.0 to publish a library version (docs/RELEASING.md).
+# Go modules are published by the tag itself; this workflow tests it,
+# attaches CLI binaries to a GitHub release whose notes are the tag's
+# CHANGELOG.md section, and asks the Go module proxy to index the version.
+# Platform tags (platform/v*) do not match.
 
 on:
   push:
@@ -21,25 +23,47 @@ jobs:
           go-version-file: go.mod
 
       - run: go vet ./...
-      - run: go test ./...
+      - run: go test -race ./...
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          awk -v v="$version" '
+            /^## \[/ { if (found) exit; if (index($0, "## [" v "]") == 1) { found = 1; next } }
+            /^\[[^]]+\]: / { if (found) exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no section for $version"; exit 1
+          fi
 
       - name: Build binaries
         env:
           CGO_ENABLED: "0"
         run: |
           mkdir dist
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os=${target%/*}; arch=${target#*/}
             ext=""; [ "$os" = windows ] && ext=".exe"
-            GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w" \
+            GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
               -o "dist/openpersona-${GITHUB_REF_NAME}-${os}-${arch}${ext}" ./cmd/openpersona
           done
           (cd dist && sha256sum * > checksums.txt)
 
-      - name: Create GitHub release
+      # Idempotent: a tag pushed again (after a history rewrite, or a re-run)
+      # updates the existing release instead of failing on it.
+      - name: Create or update the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            prerelease=""
+            case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md $prerelease
+          fi
 
       # Not fatal: the proxy also picks the version up on the first `go get`.
       - name: Ask the Go proxy to index this version

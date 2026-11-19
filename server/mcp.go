@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"go.vicoworks.com/open-persona/cloud"
 	"go.vicoworks.com/open-persona/llm"
 	"go.vicoworks.com/open-persona/persona"
 )
@@ -139,11 +138,11 @@ func (s *Server) mcpTools(ctx context.Context) ([]mcpToolDef, error) {
 	if err != nil {
 		return nil, err
 	}
-	pr := principalOf(ctx)
+	pr := PrincipalFrom(ctx)
 	slices.SortFunc(specs, func(a, b persona.Spec) int { return strings.Compare(a.ID, b.ID) })
 	var tools []mcpToolDef
 	for _, sp := range specs {
-		if pr.Can(cloud.ScopeKnowledge, sp.ID) {
+		if pr.Can(ScopeKnowledge, sp.ID) {
 			tools = append(tools, mcpToolDef{
 				Name: sp.ID + "_knowledge", Title: sp.Name + ": knowledge",
 				Description: sp.KnowledgeToolDescription(),
@@ -157,7 +156,7 @@ func (s *Server) mcpTools(ctx context.Context) ([]mcpToolDef, error) {
 				},
 			})
 		}
-		if pr.Can(cloud.ScopeChat, sp.ID) && s.Chat != nil {
+		if pr.Can(ScopeChat, sp.ID) && s.ChatModel != nil {
 			tools = append(tools, mcpToolDef{
 				Name: sp.ID + "_ask", Title: sp.Name + ": ask",
 				Description: fmt.Sprintf("Ask %s (%s) and get a finished answer grounded in its knowledge. Slower than %s_knowledge (one model call).", sp.Name, sp.Role, sp.ID),
@@ -181,19 +180,19 @@ func toolText(text string, isErr bool) map[string]any {
 
 func (s *Server) mcpTool(ctx context.Context, name string, args json.RawMessage) (any, *rpcError) {
 	id, op, ok := cutLast(name, "_")
-	pr := principalOf(ctx)
-	if !ok || (op != "knowledge" && op != "ask") || !canAny(pr, id) {
+	pr := PrincipalFrom(ctx)
+	if !ok || (op != "knowledge" && op != "ask") || !pr.canAny(id) {
 		return nil, &rpcError{-32602, "unknown tool: " + name}
 	}
-	scope := cloud.ScopeKnowledge
+	scope := ScopeKnowledge
 	if op == "ask" {
-		scope = cloud.ScopeChat
+		scope = ScopeChat
 	}
 	if !pr.Can(scope, id) {
 		return toolText(fmt.Sprintf("this API key lacks the %q scope for %s", scope, id), true), nil
 	}
 	p, err := s.catalog().Persona(ctx, id)
-	if errors.Is(err, cloud.ErrNotFound) {
+	if errors.Is(err, ErrNotFound) {
 		return nil, &rpcError{-32602, "unknown tool: " + name}
 	}
 	if err != nil {
@@ -226,13 +225,13 @@ func (s *Server) mcpTool(ctx context.Context, name string, args json.RawMessage)
 		}
 		return toolText(strings.TrimSpace(k.Text()), false), nil
 	}
-	if s.Chat == nil {
+	if s.ChatModel == nil {
 		return toolText("no chat model is configured on this server", true), nil
 	}
 	if strings.TrimSpace(a.Question) == "" {
 		return toolText("question is required", true), nil
 	}
-	reply, err := p.Chat(ctx, s.Chat, []llm.Message{{Role: "user", Content: a.Question}}, persona.ChatOptions{Context: a.Context})
+	reply, err := p.Chat(ctx, s.ChatModel, []llm.Message{{Role: "user", Content: a.Question}}, persona.ChatOptions{Context: a.Context})
 	if err != nil {
 		return toolText(err.Error(), true), nil
 	}

@@ -6,17 +6,40 @@ Start the server:
 openpersona serve -addr :8080 -db memory.db -personas ./packs
 ```
 
-`-personas` is a directory of `*.persona` files; each is served under its persona id (`fina`). `openpersona serve -cloud` is the hosted mode: API keys, async jobs and usage live in the registry database and packs are pulled on demand; the same handler runs on AWS Lambda (see [HOSTING.md](HOSTING.md)).
+`-personas` is a directory of `*.persona` files; each is served under its persona id (`fina`). The same port serves the API as gRPC ([GRPC.md](GRPC.md)) and MCP.
 
-**Authentication.** Send `Authorization: Bearer <key>` (or `X-API-Key: <key>`) on every request except `/healthz`. A self-hosted server accepts the single `OPENPERSONA_API_KEY`; the hosted service accepts keys created with `openpersona keys create`, each limited to some personas and some scopes: `knowledge` (retrieval, no LLM), `chat` (answers, streaming, jobs, MCP ask), `download` (the pack file). A missing or wrong key is `401`; a missing scope is `403`; a persona outside the key is `404`.
+The machine-readable contract is [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), also served by the server at `GET /openapi.yaml`: generate a client from it, or import it into Postman. This page explains it. Everything under `/v1` is stable; the rules are in [`api/README.md`](../api/README.md).
 
-**Errors** are JSON: `{"error": "message"}` with a 4xx or 5xx status. Request bodies are JSON, at most 8 MB.
+**Authentication.** Send `Authorization: Bearer <key>` (or `X-API-Key: <key>`) on every request except `/healthz` and `/openapi.yaml`. `openpersona serve` accepts the single `OPENPERSONA_API_KEY`, which holds every scope. A server with its own `server.Authenticator` can issue keys limited to some personas and some scopes: `knowledge` (retrieval, no LLM), `chat` (answers, streaming, jobs, MCP ask), `download` (the pack file). A missing or wrong key is `401`; a missing scope is `403`; a persona outside the key is `404`.
+
+**Errors** are JSON with a stable `code`:
+
+```json
+{"error": "this API key lacks the \"chat\" scope for kora", "code": "permission_denied"}
+```
+
+| `code` | Status | |
+|---|---|---|
+| `invalid_argument` | 400 | Malformed request; do not retry it unchanged |
+| `unauthenticated` | 401 | Missing or invalid API key |
+| `permission_denied` | 403 | The key lacks a scope |
+| `not_found` | 404 | No such persona or job, or the key cannot see it |
+| `internal` | 500 | |
+| `unimplemented` | 501 | This deployment cannot do it (streaming on a buffering host) |
+| `upstream` | 502 | The chat model failed |
+| `unavailable` | 503 | Not configured here, or temporarily down; retry after `Retry-After` |
+
+Branch on `code`, not on the message. New codes may be added; treat an unknown one like `internal`. Request bodies are JSON, at most 8 MB.
 
 ---
 
 ## `GET /healthz`
 
 `200 {"status":"ok"}`. No authentication.
+
+## `GET /openapi.yaml`
+
+The OpenAPI document of this API. No authentication.
 
 ## `POST /v1/memory/{scope}/messages`
 
@@ -134,7 +157,7 @@ event: done
 data: {"persona":"kora","version":"1.0.0","reply":"Naik JR Tokaido, 15–20 menit.","units":[...],"usage":{...}}
 ```
 
-On failure the last event is `error` with `{"error": "..."}`. Streaming needs a host that can stream (EC2 in the hosted setup); a buffered Lambda Function URL answers `501` and points to the jobs endpoint.
+Errors found before the first event (a bad request, an unknown persona, a missing scope) are ordinary JSON error responses. A failure after streaming started ends the stream with `event: error` and `data: {"error": "...", "code": "..."}`. Streaming needs a host that can stream; a host that buffers responses answers `501` (`unimplemented`): use the jobs endpoint there.
 
 | Status | Meaning |
 |---|---|
@@ -145,7 +168,7 @@ On failure the last event is `error` with `{"error": "..."}`. Streaming needs a 
 
 ## `POST /v1/personas/{id}/jobs`
 
-The same answer, asynchronously: the request returns at once and the answer is computed outside it (on Lambda, by an asynchronous invocation). Same body as chat, without `stream` and memory. Scope `chat`.
+The same answer, asynchronously: the request returns at once and the answer is computed outside it (in a goroutine of `openpersona serve`, or wherever the server's `Dispatch` sends it, such as an asynchronous serverless invocation). Same body as chat, without `stream` and memory. Scope `chat`.
 
 `202 Accepted`, `Location: /v1/jobs/job_...`:
 
@@ -163,11 +186,11 @@ The job; poll it until `status` is `succeeded` or `failed` (`Retry-After` sugges
 
 ## `GET /v1/personas/{id}/pack`
 
-The pack file, to run the persona inside your own backend. Scope `download`. Supports `Range` (the Go client downloads in 3 MiB ranges, which keeps each response under Lambda's 6 MB limit) and identifies the file with `X-Pack-SHA256`, `X-Persona-Id`, `X-Persona-Version` and `ETag`. A pack contains its training material verbatim.
+The pack file, to run the persona inside your own backend. Scope `download`. Supports `Range` (the Go client downloads in 3 MiB ranges, which keeps each response under the payload limits of serverless platforms) and identifies the file with `X-Pack-SHA256`, `X-Persona-Id`, `X-Persona-Version` and `ETag`. A pack contains its training material verbatim.
 
 ## `POST /mcp`
 
-[Model Context Protocol](https://modelcontextprotocol.io) over streamable HTTP: stateless, JSON responses, no SSE stream (so it also runs on Lambda). Methods: `initialize`, `ping`, `tools/list`, `tools/call`. Each persona the key may use becomes tools:
+[Model Context Protocol](https://modelcontextprotocol.io) over streamable HTTP: stateless, JSON responses, no SSE stream (so it also runs on serverless platforms). Methods: `initialize`, `ping`, `tools/list`, `tools/call`. Each persona the key may use becomes tools:
 
 | Tool | Scope | Does |
 |---|---|---|

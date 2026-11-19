@@ -1,0 +1,502 @@
+openapi: 3.1.0
+info:
+  title: OpenPersona API
+  version: 1.0.0
+  summary: Trained personas and long-term memory for AI agents.
+  description: |
+    The HTTP API of an OpenPersona server (`openpersona serve`). The same
+    operations are served as gRPC services (`api/proto/openpersona/v1`)
+    on the same port.
+
+    **Stability.** Everything under `/v1` is stable: fields and endpoints
+    may be added, never removed or changed in meaning. Clients must ignore
+    fields they do not know. A breaking change would ship as `/v2`.
+
+    **Authentication.** `Authorization: Bearer <key>` (or `X-API-Key`)
+    on every request except `/healthz` and `/openapi.yaml`.
+
+    **Errors.** Every error answers with `{"error": "...", "code": "..."}`.
+    `code` is one of the values of `ErrorCode`; branch on it, not on the
+    message. `503` responses carry `Retry-After`.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: http://localhost:8080
+    description: A local `openpersona serve`
+security:
+  - bearer: []
+  - apiKey: []
+tags:
+  - name: personas
+  - name: jobs
+  - name: memory
+  - name: meta
+paths:
+  /healthz:
+    get:
+      tags: [meta]
+      operationId: health
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: The server is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+  /openapi.yaml:
+    get:
+      tags: [meta]
+      operationId: getOpenAPI
+      summary: This document
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/yaml: {}
+  /v1/personas:
+    get:
+      tags: [personas]
+      operationId: listPersonas
+      summary: List the personas this API key may use
+      responses:
+        "200":
+          description: Personas, sorted by id.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [personas]
+                properties:
+                  personas:
+                    type: array
+                    items: { $ref: "#/components/schemas/Persona" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/personas/{id}:
+    parameters:
+      - $ref: "#/components/parameters/PersonaID"
+    get:
+      tags: [personas]
+      operationId: getPersona
+      summary: Describe one persona
+      responses:
+        "200":
+          description: The persona's manifest.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Manifest" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/personas/{id}/knowledge:
+    parameters:
+      - $ref: "#/components/parameters/PersonaID"
+    post:
+      tags: [personas]
+      operationId: getKnowledge
+      summary: Retrieve what the persona knows about one query
+      description: No model call. Scope `knowledge`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeRequest" }
+      responses:
+        "200":
+          description: Knowledge and the system prompt for this query.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeResult" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/personas/{id}/prompt:
+    parameters:
+      - $ref: "#/components/parameters/PersonaID"
+    post:
+      tags: [personas]
+      operationId: getPrompt
+      summary: Same as /knowledge
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeRequest" }
+      responses:
+        "200":
+          description: Knowledge and the system prompt for this query.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeResult" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/personas/{id}/chat:
+    parameters:
+      - $ref: "#/components/parameters/PersonaID"
+    post:
+      tags: [personas]
+      operationId: chat
+      summary: Answer as the persona
+      description: |
+        Scope `chat`. With `"stream": true` (or `Accept: text/event-stream`)
+        the answer arrives as server-sent events:
+
+        - `event: delta`, `data: {"text": "..."}`, repeated, in order
+        - `event: done`, `data:` a `ChatResult`, once, at the end
+        - `event: error`, `data:` an `Error`, instead of `done` on failure
+
+        Errors found before streaming starts are ordinary JSON errors.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatRequest" }
+      responses:
+        "200":
+          description: The answer, or its event stream.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatResult" }
+            text/event-stream:
+              schema: { type: string }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/personas/{id}/jobs:
+    parameters:
+      - $ref: "#/components/parameters/PersonaID"
+    post:
+      tags: [jobs]
+      operationId: submitChatJob
+      summary: Answer asynchronously
+      description: Scope `chat`. Poll the returned job (its URL is in `Location`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatRequest" }
+      responses:
+        "202":
+          description: The job, queued.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/jobs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [jobs]
+      operationId: getJob
+      summary: An async job and, when done, its answer
+      responses:
+        "200":
+          description: The job. While it runs, `Retry-After` suggests when to poll again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/personas/{id}/pack:
+    parameters:
+      - $ref: "#/components/parameters/PersonaID"
+    get:
+      tags: [personas]
+      operationId: downloadPack
+      summary: The pack file, to run the persona locally
+      description: Scope `download`. Supports `Range` requests.
+      responses:
+        "200":
+          description: The whole pack.
+          headers:
+            X-Pack-SHA256: { schema: { type: string } }
+            X-Persona-Id: { schema: { type: string } }
+            X-Persona-Version: { schema: { type: string } }
+          content:
+            application/vnd.openpersona.pack:
+              schema: { type: string, format: binary }
+        "206":
+          description: A range of the pack.
+          content:
+            application/vnd.openpersona.pack:
+              schema: { type: string, format: binary }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/memory/{scope}/messages:
+    parameters:
+      - $ref: "#/components/parameters/Scope"
+    post:
+      tags: [memory]
+      operationId: addMessages
+      summary: Store messages
+      description: Facts are extracted in the background.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  items: { $ref: "#/components/schemas/MemoryMessage" }
+      responses:
+        "202":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stored: { type: integer }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/memory/{scope}/search:
+    parameters:
+      - $ref: "#/components/parameters/Scope"
+    post:
+      tags: [memory]
+      operationId: searchMemory
+      summary: Facts, messages and a prompt-ready context block
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemorySearchRequest" }
+      responses:
+        "200":
+          description: What the scope holds about the query.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemorySearchResult" }
+        default: { $ref: "#/components/responses/Error" }
+  /mcp:
+    post:
+      tags: [meta]
+      operationId: mcp
+      summary: Model Context Protocol (streamable HTTP, JSON responses)
+      description: |
+        JSON-RPC 2.0. Every persona the key may use offers the tools
+        `{id}_knowledge` (scope `knowledge`) and `{id}_ask` (scope `chat`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: JSON-RPC response(s).
+          content:
+            application/json:
+              schema: { type: object }
+        "202":
+          description: Only notifications were sent.
+    get:
+      tags: [meta]
+      operationId: mcpStream
+      summary: Not offered (no SSE stream); answers 501
+      responses:
+        default: { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    PersonaID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$" }
+    Scope:
+      name: scope
+      in: path
+      required: true
+      description: Memory scope, usually a user id.
+      schema: { type: string }
+  responses:
+    Error:
+      description: An error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        `invalid_argument` 400, `unauthenticated` 401, `permission_denied` 403,
+        `not_found` 404, `internal` 500, `unimplemented` 501,
+        `upstream` 502 (the chat model failed), `unavailable` 503 (retry).
+        New codes may be added; treat unknown ones as `internal`.
+      enum: [invalid_argument, unauthenticated, permission_denied, not_found, unavailable, unimplemented, upstream, internal]
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error: { type: string, description: Human-readable message. }
+        code: { $ref: "#/components/schemas/ErrorCode" }
+    Persona:
+      type: object
+      required: [name, role]
+      properties:
+        id: { type: string }
+        version: { type: string, description: "Semantic version, such as 1.0.0." }
+        name: { type: string }
+        role: { type: string }
+        description: { type: string }
+        expertise: { type: array, items: { type: string } }
+        tone: { type: string }
+        language: { type: string }
+        boundaries: { type: array, items: { type: string } }
+        author: { type: string }
+        retrieve:
+          type: object
+          properties:
+            units: { type: integer }
+            sources: { type: integer }
+    Manifest:
+      type: object
+      required: [format, spec, core]
+      properties:
+        format: { type: integer, description: Pack format version. }
+        spec: { $ref: "#/components/schemas/Persona" }
+        core: { type: string, description: The identity block present in every prompt. }
+        report:
+          type: object
+          properties:
+            sources: { type: integer }
+            chunks: { type: integer }
+            units: { type: integer }
+            entities: { type: integer }
+            by_kind: { type: object, additionalProperties: { type: integer } }
+        eval:
+          type: object
+          properties:
+            cases: { type: integer }
+            passed: { type: integer }
+            coverage: { type: number }
+            answered: { type: boolean }
+            answer_passed: { type: integer }
+            answer_coverage: { type: number }
+            results:
+              type: array
+              items:
+                type: object
+                properties:
+                  q: { type: string }
+                  missing: { type: array, items: { type: string } }
+                  top_units: { type: array, items: { type: string } }
+                  answer: { type: string }
+                  answer_missing: { type: array, items: { type: string } }
+        trained_at: { type: string, format: date-time }
+        train_model: { type: string }
+        embed_model: { type: string }
+    Item:
+      type: object
+      required: [id, kind, text, score]
+      properties:
+        id: { type: integer, format: int64 }
+        kind: { type: string, description: "rule, procedure, reference, concept, principle, example, source; memory: fact, episode." }
+        title: { type: string }
+        text: { type: string }
+        valid_at: { type: string, format: date-time }
+        invalid_at: { type: string, format: date-time }
+        score: { type: number }
+        channels: { type: array, items: { type: string } }
+    Message:
+      type: object
+      required: [role, content]
+      properties:
+        role: { type: string, enum: [user, assistant] }
+        content: { type: string }
+    MemoryMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: { type: string, description: "user, assistant, or any speaker label." }
+        name: { type: string }
+        content: { type: string }
+        time: { type: string, format: date-time }
+    Usage:
+      type: object
+      properties:
+        prompt_tokens: { type: integer, format: int64 }
+        completion_tokens: { type: integer, format: int64 }
+        calls: { type: integer, format: int64 }
+    KnowledgeRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string, description: "One focused question, in the user's language." }
+        units: { type: integer, minimum: 0, maximum: 64, description: "0: the persona's default budget." }
+        sources: { type: integer, minimum: -1, maximum: 16, description: "0: the default; -1: none." }
+    KnowledgeResult:
+      type: object
+      required: [persona, version, system, context, units, sources]
+      properties:
+        persona: { type: string }
+        version: { type: string }
+        system: { type: string, description: The full system prompt for this query. }
+        context: { type: string, description: The knowledge alone, as text. }
+        units: { type: array, items: { $ref: "#/components/schemas/Item" } }
+        sources: { type: array, items: { $ref: "#/components/schemas/Item" } }
+    ChatRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          description: The conversation; the last message must be from the user.
+          items: { $ref: "#/components/schemas/Message" }
+        context: { type: string, description: Extra material for the system prompt. }
+        max_tokens: { type: integer, minimum: 0 }
+        stream: { type: boolean, description: "Answer as server-sent events (chat only)." }
+        memory_scope: { type: string, description: "Add this server's memory of the user (chat only)." }
+        remember: { type: boolean, description: "With memory_scope, store the exchange (chat only)." }
+    ChatResult:
+      type: object
+      required: [persona, version, reply, units, usage]
+      properties:
+        persona: { type: string }
+        version: { type: string }
+        reply: { type: string }
+        units: { type: array, items: { $ref: "#/components/schemas/Item" } }
+        usage: { $ref: "#/components/schemas/Usage" }
+    Job:
+      type: object
+      required: [id, persona, kind, status, attempts, created_at]
+      properties:
+        id: { type: string }
+        persona: { type: string }
+        kind: { type: string, const: chat }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        result: { $ref: "#/components/schemas/ChatResult" }
+        error: { type: string }
+        attempts: { type: integer }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+    MemorySearchRequest:
+      type: object
+      properties:
+        query: { type: string }
+        facts: { type: integer, minimum: 0, description: "0: 10." }
+        episodes: { type: integer, minimum: 0, description: "0: 5." }
+        include_history: { type: boolean }
+        rerank: { type: boolean }
+        max_tokens: { type: integer, minimum: 0, description: "Budget of context; 0: no limit." }
+    MemorySearchResult:
+      type: object
+      required: [facts, episodes, context]
+      properties:
+        facts: { type: array, items: { $ref: "#/components/schemas/Item" } }
+        episodes: { type: array, items: { $ref: "#/components/schemas/Item" } }
+        context: { type: string }
