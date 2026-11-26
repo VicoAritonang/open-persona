@@ -8,7 +8,7 @@ require (
 	connectrpc.com/grpcreflect v1.3.1
 	golang.org/x/mod v0.43.0
 	google.golang.org/protobuf v1.36.12
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
